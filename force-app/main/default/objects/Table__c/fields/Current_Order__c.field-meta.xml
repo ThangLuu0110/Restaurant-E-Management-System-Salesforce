@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Current_Order__c</fullName>
+    <deleteConstraint>SetNull</deleteConstraint>
+    <description>Order đang hoạt động tại bàn (null khi bàn trống)</description>
+    <label>Current Order</label>
+    <referenceTo>Order__c</referenceTo>
+    <relationshipLabel>Table</relationshipLabel>
+    <relationshipName>Table</relationshipName>
+    <required>false</required>
+    <trackHistory>false</trackHistory>
+    <trackTrending>false</trackTrending>
+    <type>Lookup</type>
+</CustomField>
