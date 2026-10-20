@@ -1,0 +1,34 @@
+<template>
+    <header class="header-menu">
+        <h1 class="header-menu_title">{restaurantName}</h1>
+        <button class="header-menu_cart">
+            <lightning-icon icon-name='standard:webcart' alternative-text='webcart' size='large' title='webcart'></lightning-icon>
+        </button>
+    </header>
+    <!-- 
+
+    <lightning-radio-group
+        type="button" label="Loại món" options={categoryOptions}
+        value="All" onchange={handleCategoryChange}>
+    </lightning-radio-group>
+
+    <template lwc:if={error}>
+        <p class="slds-text-color_error">{error}</p>
+    </template>
+
+    <div class="slds-grid slds-wrap slds-gutters slds-m-top_medium">
+        <template for:each={items} for:item="item">
+            <div key={item.Id} class="slds-col slds-size_1-of-1 slds-medium-size_1-of-3">
+                <article class="slds-card slds-p-around_small">
+                    <img src={item.Image_URL__c} alt={item.Name} loading="lazy">
+                    <h2 class="slds-text-heading_small">{item.Name}</h2>
+                    <p>{item.Description__c}</p>
+                    <p><strong>{item.priceLabel}</strong> · ~{item.Prep_Time_Minutes__c} phút</p>
+                    <template for:each={item.tags} for:item="tag">
+                        <lightning-badge key={tag} label={tag}></lightning-badge>
+                    </template>
+                </article>
+            </div>
+        </template>
+    </div> -->
+</template>
