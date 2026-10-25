@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-8" ?>
 <CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
     <actionOverrides>
         <actionName>Accept</actionName>
@@ -153,14 +153,14 @@
     <enableSearch>false</enableSearch>
     <enableSharing>true</enableSharing>
     <enableStreamingApi>true</enableStreamingApi>
-    <externalSharingModel>Private</externalSharingModel>
-    <label>Menu Item</label>
+    <externalSharingModel>Read</externalSharingModel>
+    <label>[REMS] Menu Item</label>
     <nameField>
         <label>Item Name</label>
         <type>Text</type>
     </nameField>
     <pluralLabel>Menu Item</pluralLabel>
-    <searchLayouts></searchLayouts>
+    <searchLayouts />
     <sharingModel>ReadWrite</sharingModel>
     <visibility>Public</visibility>
 </CustomObject>
