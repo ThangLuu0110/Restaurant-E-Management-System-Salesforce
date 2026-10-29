@@ -1,11 +1,19 @@
 import { createElement } from "@lwc/engine-dom";
 import MenuPageComponent from "c/menuPageComponent";
-import { getPicklistValues } from "lightning/uiObjectInfoApi";
 import getMenuItems from "@salesforce/apex/MenuController.getMenuItems";
+import getCategoryOptions from "@salesforce/apex/MenuController.getCategoryOptions";
 
-// Mock the Apex method as a wire adapter so tests can emit data/errors
+// Mock the Apex methods as wire adapters so tests can emit data/errors
 jest.mock(
   "@salesforce/apex/MenuController.getMenuItems",
+  () => {
+    const { createApexTestWireAdapter } = require("@salesforce/sfdx-lwc-jest");
+    return { default: createApexTestWireAdapter(jest.fn()) };
+  },
+  { virtual: true }
+);
+jest.mock(
+  "@salesforce/apex/MenuController.getCategoryOptions",
   () => {
     const { createApexTestWireAdapter } = require("@salesforce/sfdx-lwc-jest");
     return { default: createApexTestWireAdapter(jest.fn()) };
@@ -18,24 +26,7 @@ const MENU_ITEMS = [
   { Id: "a01000000000002AAA", Name: "Bún chả", Price__c: 45000 }
 ];
 
-const PICKLIST_DATA = {
-  values: [
-    {
-      label: "Appertizer",
-      value: "Appertizer",
-      attributes: null,
-      validFor: []
-    },
-    {
-      label: "Main Course",
-      value: "Main Course",
-      attributes: null,
-      validFor: []
-    },
-    { label: "Dessert", value: "Dessert", attributes: null, validFor: [] },
-    { label: "Beverage", value: "Beverage", attributes: null, validFor: [] }
-  ]
-};
+const CATEGORY_OPTIONS = ["Appertizer", "Main Course", "Dessert", "Beverage"];
 
 // Wait for LWC to re-render after a state change
 const flushPromises = () => Promise.resolve();
@@ -70,12 +61,12 @@ describe("c-menu-page-component", () => {
     expect(element.shadowRoot.querySelector("h1").textContent).toBe("Menu");
   });
 
-  it("renders no chips before picklist data arrives", () => {
+  it("renders no chips before category options arrive", () => {
     expect(getChips(element)).toHaveLength(0);
   });
 
-  it('renders "All" plus one chip per picklist value, with only "All" active', async () => {
-    getPicklistValues.emit(PICKLIST_DATA);
+  it('renders "All" plus one chip per category option, with only "All" active', async () => {
+    getCategoryOptions.emit(CATEGORY_OPTIONS);
     await flushPromises();
 
     const chips = getChips(element);
@@ -94,8 +85,8 @@ describe("c-menu-page-component", () => {
     expect(active[0].className).toBe("chip chip--active");
   });
 
-  it("sets data-value on each chip to the picklist API value", async () => {
-    getPicklistValues.emit(PICKLIST_DATA);
+  it("sets data-value on each chip to the category API value", async () => {
+    getCategoryOptions.emit(CATEGORY_OPTIONS);
     await flushPromises();
 
     expect(getChips(element).map((c) => c.dataset.value)).toEqual([
@@ -108,7 +99,7 @@ describe("c-menu-page-component", () => {
   });
 
   it("moves the active state to the clicked chip", async () => {
-    getPicklistValues.emit(PICKLIST_DATA);
+    getCategoryOptions.emit(CATEGORY_OPTIONS);
     await flushPromises();
 
     getChips(element)[2].click(); // "Main Course"
@@ -126,7 +117,7 @@ describe("c-menu-page-component", () => {
   });
 
   it('can switch back to "All" after selecting another chip', async () => {
-    getPicklistValues.emit(PICKLIST_DATA);
+    getCategoryOptions.emit(CATEGORY_OPTIONS);
     await flushPromises();
 
     getChips(element)[4].click(); // "Beverage"
@@ -139,12 +130,12 @@ describe("c-menu-page-component", () => {
     expect(active[0].textContent.trim()).toBe("All");
   });
 
-  it("logs the error and renders no chips when the picklist wire fails", async () => {
+  it("logs the error and renders no chips when the category options wire fails", async () => {
     const consoleError = jest
       .spyOn(console, "error")
       .mockImplementation(() => {});
 
-    getPicklistValues.error();
+    getCategoryOptions.error();
     await flushPromises();
 
     expect(consoleError).toHaveBeenCalled();
