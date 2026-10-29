@@ -45,6 +45,21 @@ public with sharing class OrderItemTriggerHandler {
         handleStatusChange(newItems, oldMap);
     }
 
+    public static void beforeDelete(List<Order_Item__c> newItems) {
+    }
+
+    public static void afterInsert(List<Order_Item__c> newItems) {
+    }
+
+    public static void afterUpdate(
+        List<Order_Item__c> newItems,
+        Map<Id, Order_Item__c> oldMap
+    ) {
+    }
+
+    public static void afterDelete(List<Order_Item__c> newItems) {
+    }
+
     /**
      * a. Quantity__c phải > 0. Record sai chỉ bị addError riêng,
      *    các record khác trong cùng batch vẫn được xử lý tiếp.
