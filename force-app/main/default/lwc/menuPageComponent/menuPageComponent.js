@@ -1,8 +1,12 @@
 import { LightningElement, api, wire } from "lwc";
 import getMenuItems from "@salesforce/apex/MenuController.getMenuItems";
 import getCategoryOptions from "@salesforce/apex/MenuController.getCategoryOptions";
+import FOOD_IMAGES from "@salesforce/resourceUrl/FoodImages";
+
+const FOLDER = "food-images";
 export default class MenuPageComponent extends LightningElement {
   @api title;
+  @api item; // Menu_Item__c record
   categoryOptions = [];
   selectedCategory = "All";
   allMenuItems = [];
@@ -47,11 +51,19 @@ export default class MenuPageComponent extends LightningElement {
   }
 
   get filteredItems() {
-    return this.selectedCategory === "All"
-      ? this.allMenuItems
-      : this.allMenuItems.filter(
-          (item) => item.Category__c === this.selectedCategory
-        );
+    const items =
+      this.selectedCategory === "All"
+        ? this.allMenuItems
+        : this.allMenuItems.filter(
+            (i) => i.Category__c === this.selectedCategory
+          );
+
+    return items.map((i) => ({
+      ...i,
+      imageSrc: i.Image_URL__c
+        ? `${FOOD_IMAGES}/${FOLDER}/${i.Image_URL__c}`
+        : undefined
+    }));
   }
 
   handleCategoryClick(event) {

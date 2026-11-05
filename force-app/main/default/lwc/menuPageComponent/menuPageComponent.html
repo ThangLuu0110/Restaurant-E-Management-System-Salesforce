@@ -67,7 +67,13 @@
       <template for:each={filteredItems} for:item="item">
         <article class="dish-card" key={item.Id}>
           <div class="dish-card__image">
-            <span class="dish-card__image-label">Ảnh món ăn</span>
+            <template lwc:if={item.imageSrc}>
+              <img
+                src={item.imageSrc}
+                alt={item.Name}
+                class="dish-card__image-img"
+              />
+            </template>
           </div>
           <div class="dish-card__body">
             <div class="dish-card__name">{item.Name}</div>
