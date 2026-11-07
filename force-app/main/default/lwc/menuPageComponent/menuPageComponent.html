@@ -59,9 +59,14 @@
           class="search__input"
           placeholder="Search for food..."
           aria-label="Search for food"
+          oninput={handleSearchChange}
         />
       </div>
     </div>
+
+    <template lwc:if={hasNoResults}>
+      <p class="empty-state">Không tìm thấy món phù hợp</p>
+    </template>
 
     <div class="dish-grid">
       <template for:each={filteredItems} for:item="item">

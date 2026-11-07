@@ -184,6 +184,13 @@ button:focus-visible {
   outline: none;
 }
 
+.empty-state {
+  margin: var(--space-8) 0 0;
+  text-align: center;
+  font-weight: 600;
+  color: var(--navy);
+}
+
 /* 2c. Dish grid */
 .dish-grid {
   display: grid;
