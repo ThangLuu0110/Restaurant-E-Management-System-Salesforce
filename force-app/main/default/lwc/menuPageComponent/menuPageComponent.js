@@ -4,12 +4,26 @@ import getCategoryOptions from "@salesforce/apex/MenuController.getCategoryOptio
 import FOOD_IMAGES from "@salesforce/resourceUrl/FoodImages";
 
 const FOLDER = "food-images";
+const SEARCH_DELAY_MS = 300;
+
+// Chuẩn hóa chuỗi để so sánh: chữ thường, bỏ dấu tiếng Việt, bỏ khoảng trắng đầu/cuối
+function normalizeText(value) {
+  return (value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/đ/g, "d")
+    .trim();
+}
+
 export default class MenuPageComponent extends LightningElement {
   @api title;
   @api item; // Menu_Item__c record
   categoryOptions = [];
   selectedCategory = "All";
   allMenuItems = [];
+  searchKey = ""; // từ khóa đã chuẩn hóa
+  searchTimeout;
   error;
 
   // 1) Lấy giá trị picklist Category__c từ Apex (MenuController.getCategoryOptions)
@@ -50,13 +64,16 @@ export default class MenuPageComponent extends LightningElement {
     }
   }
 
+  // 4) Lọc theo category đang chọn VÀ từ khóa tìm kiếm (theo Name)
   get filteredItems() {
-    const items =
-      this.selectedCategory === "All"
-        ? this.allMenuItems
-        : this.allMenuItems.filter(
-            (i) => i.Category__c === this.selectedCategory
-          );
+    const items = this.allMenuItems.filter((i) => {
+      const matchCategory =
+        this.selectedCategory === "All" ||
+        i.Category__c === this.selectedCategory;
+      const matchSearch =
+        !this.searchKey || normalizeText(i.Name).includes(this.searchKey);
+      return matchCategory && matchSearch;
+    });
 
     return items.map((i) => ({
       ...i,
@@ -66,7 +83,25 @@ export default class MenuPageComponent extends LightningElement {
     }));
   }
 
+  get hasNoResults() {
+    return this.allMenuItems.length > 0 && this.filteredItems.length === 0;
+  }
+
   handleCategoryClick(event) {
     this.selectedCategory = event.currentTarget.dataset.value;
+  }
+
+  // Debounce: chỉ lọc sau khi người dùng ngừng gõ SEARCH_DELAY_MS
+  handleSearchChange(event) {
+    const value = event.target.value;
+    clearTimeout(this.searchTimeout);
+    // eslint-disable-next-line @lwc/lwc/no-async-operation
+    this.searchTimeout = setTimeout(() => {
+      this.searchKey = normalizeText(value);
+    }, SEARCH_DELAY_MS);
+  }
+
+  disconnectedCallback() {
+    clearTimeout(this.searchTimeout);
   }
 }
