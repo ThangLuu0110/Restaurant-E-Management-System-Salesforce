@@ -75,6 +75,50 @@ button:focus-visible {
   font-size: 14px;
 }
 
+.cart-area {
+  position: relative;
+  flex: none;
+}
+
+.cart-area__dropdown {
+  position: absolute;
+  top: calc(100% + 12px);
+  right: 0;
+  z-index: 50;
+}
+
+.toast-region {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 100;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+}
+
+.toast {
+  padding: var(--space-3) var(--space-4);
+  border: var(--border);
+  border-radius: var(--radius-control);
+  background: var(--navy);
+  color: var(--on-accent-active);
+  font-weight: 600;
+  box-shadow: 4px 4px 0 var(--accent);
+  animation: toast-in 0.2s ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .cart-button {
   position: relative;
   flex: none;

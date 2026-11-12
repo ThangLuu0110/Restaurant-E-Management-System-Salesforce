@@ -2,26 +2,46 @@
   <main class="main">
     <div class="title-row">
       <h1 class="title-row__heading">{title}</h1>
-      <button type="button" class="cart-button" aria-label="Cart">
-        <svg
-          class="cart-button__icon"
-          width="22"
-          height="22"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="square"
-          aria-hidden="true"
+      <div class="cart-area" onclick={handleCartAreaClick}>
+        <button
+          type="button"
+          class="cart-button"
+          aria-label={cartAriaLabel}
+          aria-haspopup="dialog"
+          aria-expanded={cartExpanded}
+          onclick={handleCartToggle}
         >
-          <circle cx="8" cy="21" r="1"></circle>
-          <circle cx="19" cy="21" r="1"></circle>
-          <path
-            d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"
-          ></path>
-        </svg>
-        <span class="cart-button__badge">2</span>
-      </button>
+          <svg
+            class="cart-button__icon"
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="square"
+            aria-hidden="true"
+          >
+            <circle cx="8" cy="21" r="1"></circle>
+            <circle cx="19" cy="21" r="1"></circle>
+            <path
+              d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"
+            ></path>
+          </svg>
+          <template lwc:if={hasCartItems}>
+            <span class="cart-button__badge">{cartCount}</span>
+          </template>
+        </button>
+        <template lwc:if={isCartOpen}>
+          <c-cart-dropdown
+            class="cart-area__dropdown"
+            items={cartItems}
+            onquantitychange={handleQuantityChange}
+            onremove={handleRemoveItem}
+            onclear={handleClearCart}
+          ></c-cart-dropdown>
+        </template>
+      </div>
     </div>
 
     <div class="toolbar">
@@ -82,14 +102,25 @@
           </div>
           <div class="dish-card__body">
             <div class="dish-card__name">{item.Name}</div>
-            <div class="dish-card__price">{item.Price__c}</div>
+            <div class="dish-card__price">{item.priceLabel}</div>
             <div class="dish-card__spacer"></div>
-            <button type="button" class="dish-card__add">
+            <button
+              type="button"
+              class="dish-card__add"
+              data-id={item.Id}
+              onclick={handleAddToCart}
+            >
               <span>Thêm vào giỏ hàng</span>
               <span class="dish-card__add-icon">+</span>
             </button>
           </div>
         </article>
+      </template>
+    </div>
+
+    <div class="toast-region" aria-live="polite">
+      <template lwc:if={hasToast}>
+        <div class="toast" role="status">{toastMessage}</div>
       </template>
     </div>
   </main>
