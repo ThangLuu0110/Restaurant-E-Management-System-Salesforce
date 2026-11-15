@@ -6,15 +6,36 @@ export function formatPrice(value) {
   return `${new Intl.NumberFormat("vi-VN").format(amount)}đ`;
 }
 
+// Bằng độ dài field Order_Item__c.Special_Instructions__c
+export const NOTE_MAX_LENGTH = 255;
+
 /**
  * Dropdown giỏ hàng: chỉ hiển thị dữ liệu nhận từ component cha.
  * Mọi thay đổi được báo lên cha qua event:
  *  - quantitychange: { id, quantity }
+ *  - notechange: { id, note }
  *  - remove: { id }
  *  - clear
+ *  - placeorder
  */
 export default class CartDropdown extends LightningElement {
-  @api items = []; // [{ id, name, price, imageSrc, quantity }]
+  @api items = []; // [{ id, name, price, imageSrc, quantity, note }]
+  @api canOrder = false; // đã xác định được bàn
+  @api isSubmitting = false;
+
+  noteMaxLength = NOTE_MAX_LENGTH;
+
+  get isCheckoutDisabled() {
+    return this.isEmpty || !this.canOrder || this.isSubmitting;
+  }
+
+  get checkoutLabel() {
+    return this.isSubmitting ? "Đang gửi..." : "Đặt hàng";
+  }
+
+  get showTableHint() {
+    return this.hasItems && !this.canOrder;
+  }
 
   get isEmpty() {
     return !this.items || this.items.length === 0;
@@ -31,7 +52,9 @@ export default class CartDropdown extends LightningElement {
       lineTotalLabel: formatPrice(item.price * item.quantity),
       decreaseLabel: `Giảm số lượng ${item.name}`,
       increaseLabel: `Tăng số lượng ${item.name}`,
-      removeLabel: `Xóa ${item.name} khỏi giỏ`
+      removeLabel: `Xóa ${item.name} khỏi giỏ`,
+      noteLabel: `Ghi chú cho ${item.name}`,
+      note: item.note || ""
     }));
   }
 
@@ -71,6 +94,23 @@ export default class CartDropdown extends LightningElement {
 
   handleClear() {
     this.dispatchEvent(new CustomEvent("clear"));
+  }
+
+  handleNoteInput(event) {
+    this.dispatchEvent(
+      new CustomEvent("notechange", {
+        detail: {
+          id: event.currentTarget.dataset.id,
+          note: event.target.value
+        }
+      })
+    );
+  }
+
+  handlePlaceOrder() {
+    if (!this.isCheckoutDisabled) {
+      this.dispatchEvent(new CustomEvent("placeorder"));
+    }
   }
 
   fireQuantityChange(id, quantity) {

@@ -45,6 +45,16 @@
                   +
                 </button>
               </div>
+              <input
+                type="text"
+                class="cart-row__note"
+                placeholder="Ghi chú (vd: ít cay, không hành)"
+                maxlength={noteMaxLength}
+                data-id={row.id}
+                aria-label={row.noteLabel}
+                value={row.note}
+                oninput={handleNoteInput}
+              />
             </div>
             <div class="cart-row__side">
               <button
@@ -68,7 +78,17 @@
         <span>Tổng tiền</span>
         <strong>{totalLabel}</strong>
       </div>
-      <button type="button" class="cart__checkout" disabled>Đặt hàng</button>
+      <template lwc:if={showTableHint}>
+        <p class="cart__hint">Vui lòng quét mã QR tại bàn để đặt hàng</p>
+      </template>
+      <button
+        type="button"
+        class="cart__checkout"
+        disabled={isCheckoutDisabled}
+        onclick={handlePlaceOrder}
+      >
+        {checkoutLabel}
+      </button>
     </footer>
   </section>
 </template>
