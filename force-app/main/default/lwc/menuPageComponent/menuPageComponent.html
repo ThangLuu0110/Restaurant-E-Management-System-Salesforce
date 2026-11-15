@@ -36,13 +36,23 @@
           <c-cart-dropdown
             class="cart-area__dropdown"
             items={cartItems}
+            can-order={canOrder}
+            is-submitting={isSubmitting}
             onquantitychange={handleQuantityChange}
+            onnotechange={handleNoteChange}
             onremove={handleRemoveItem}
             onclear={handleClearCart}
+            onplaceorder={handlePlaceOrderRequest}
           ></c-cart-dropdown>
         </template>
       </div>
     </div>
+
+    <template lwc:if={isTableInvalid}>
+      <div class="table-alert" role="alert">
+        Không xác định được bàn, vui lòng quét lại mã QR
+      </div>
+    </template>
 
     <div class="toolbar">
       <div class="toolbar__chips">
@@ -118,9 +128,58 @@
       </template>
     </div>
 
+    <template lwc:if={isConfirmOpen}>
+      <div class="confirm-backdrop" onclick={handleCancelOrder}>
+        <div
+          class="confirm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-title"
+          onclick={handleConfirmDialogClick}
+        >
+          <h2 class="confirm__title" id="confirm-title">Xác nhận đặt hàng</h2>
+          <ul class="confirm__list">
+            <template for:each={cartItems} for:item="line">
+              <li class="confirm__line" key={line.id}>
+                <span class="confirm__qty">{line.quantity} ×</span>
+                <span class="confirm__name">
+                  {line.name}
+                  <template lwc:if={line.note}>
+                    <span class="confirm__note">{line.note}</span>
+                  </template>
+                </span>
+              </li>
+            </template>
+          </ul>
+          <div class="confirm__sum">
+            <span>Tổng tiền ({cartCount} món)</span>
+            <strong>{cartTotalLabel}</strong>
+          </div>
+          <div class="confirm__actions">
+            <button
+              type="button"
+              class="confirm__cancel"
+              disabled={isSubmitting}
+              onclick={handleCancelOrder}
+            >
+              Hủy
+            </button>
+            <button
+              type="button"
+              class="confirm__submit"
+              disabled={isSubmitting}
+              onclick={handleConfirmOrder}
+            >
+              {confirmSubmitLabel}
+            </button>
+          </div>
+        </div>
+      </div>
+    </template>
+
     <div class="toast-region" aria-live="polite">
       <template lwc:if={hasToast}>
-        <div class="toast" role="status">{toastMessage}</div>
+        <div class={toastClass} role={toastRole}>{toastMessage}</div>
       </template>
     </div>
   </main>

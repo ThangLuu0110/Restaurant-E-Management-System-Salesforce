@@ -1,4 +1,7 @@
 public with sharing class MenuController {
+  // Name của Table__c là Auto Number với format Table-{00}
+  private static final String TABLE_NAME_PREFIX = 'Table-';
+
   @AuraEnabled(cacheable=true)
   public static List<Menu_Item__c> getMenuItems() {
     return [
@@ -28,5 +31,30 @@ public with sharing class MenuController {
       }
     }
     return options;
+  }
+
+  /**
+   * Tìm Id của Table__c theo số bàn trên URL (?tableId=03 -> Name = 'Table-03').
+   * Trả về null nếu số bàn không hợp lệ hoặc không tồn tại.
+   */
+  @AuraEnabled(cacheable=true)
+  public static Id getTableIdByNumber(String tableNumber) {
+    if (String.isBlank(tableNumber)) {
+      return null;
+    }
+    String trimmed = tableNumber.trim();
+    if (!Pattern.matches('\\d{1,10}', trimmed)) {
+      return null;
+    }
+
+    String tableName = TABLE_NAME_PREFIX + trimmed;
+    List<Table__c> tables = [
+      SELECT Id
+      FROM Table__c
+      WHERE Name = :tableName
+      WITH USER_MODE
+      LIMIT 1
+    ];
+    return tables.isEmpty() ? null : tables[0].Id;
   }
 }
