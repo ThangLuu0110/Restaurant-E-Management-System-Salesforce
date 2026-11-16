@@ -59,6 +59,11 @@ private class OrderServiceTest {
       [SELECT COUNT() FROM Order_Item__c],
       'Không được tạo Order_Item__c khi đơn bị từ chối'
     );
+    Assert.areEqual(
+      0,
+      [SELECT COUNT() FROM Order_Error_Log__c],
+      'Đơn bị từ chối ngay tại OrderService thì không publish event, không có log'
+    );
   }
 
   // ---------- Happy path ----------
@@ -76,8 +81,14 @@ private class OrderServiceTest {
 
     Datetime beforeCall = System.now();
     Test.startTest();
-    Id orderId = OrderService.placeOrder(tableId, items);
-    Test.stopTest();
+    OrderService.placeOrder(tableId, items);
+    // Chưa deliver event thì chưa có đơn nào được tạo
+    Assert.areEqual(
+      0,
+      [SELECT COUNT() FROM Order_Request__c],
+      'Đơn chỉ được tạo khi Order_Placed__e được xử lý'
+    );
+    Test.stopTest(); // deliver Order_Placed__e -> OrderPlacedEventTrigger
 
     List<Order_Request__c> orders = [
       SELECT Id, Table__c, Status__c, Order_Time__c
@@ -85,11 +96,6 @@ private class OrderServiceTest {
     ];
     Assert.areEqual(1, orders.size(), 'Phải tạo đúng 1 Order_Request__c');
     Order_Request__c order = orders[0];
-    Assert.areEqual(
-      order.Id,
-      orderId,
-      'Phải trả về Id của Order_Request__c vừa tạo'
-    );
     Assert.areEqual(tableId, order.Table__c, 'Order phải gắn với đúng bàn');
     Assert.areEqual(
       'Placed',
