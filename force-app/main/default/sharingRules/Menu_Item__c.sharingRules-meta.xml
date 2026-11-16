@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<SharingRules xmlns="http://soap.sforce.com/2006/04/metadata">
+    <sharingGuestRules>
+        <fullName>Guest_User_Sharing_Rules</fullName>
+        <accessLevel>Read</accessLevel>
+        <label>Guest User Sharing Rules</label>
+        <sharedTo>
+            <guestUser>LoveLycaRestaurantMenu</guestUser>
+        </sharedTo>
+        <criteriaItems>
+            <field>Is_Available__c</field>
+            <operation>equals</operation>
+            <value>True</value>
+        </criteriaItems>
+        <includeHVUOwnedRecords>false</includeHVUOwnedRecords>
+    </sharingGuestRules>
+</SharingRules>

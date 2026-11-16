@@ -1,0 +1,74 @@
+<template>
+  <section class="cart" role="dialog" aria-label="Giỏ hàng">
+    <header class="cart__header">
+      <h2 class="cart__title">Giỏ hàng</h2>
+      <template lwc:if={hasItems}>
+        <button type="button" class="cart__clear" onclick={handleClear}>
+          Xóa tất cả
+        </button>
+      </template>
+    </header>
+
+    <template lwc:if={isEmpty}>
+      <p class="cart__empty">Giỏ hàng đang trống</p>
+    </template>
+    <template lwc:else>
+      <ul class="cart__list">
+        <template for:each={rows} for:item="row">
+          <li class="cart-row" key={row.id}>
+            <div class="cart-row__thumb">
+              <template lwc:if={row.imageSrc}>
+                <img src={row.imageSrc} alt={row.name} />
+              </template>
+            </div>
+            <div class="cart-row__info">
+              <div class="cart-row__name">{row.name}</div>
+              <div class="cart-row__price">{row.priceLabel}</div>
+              <div class="qty">
+                <button
+                  type="button"
+                  class="qty__btn"
+                  data-id={row.id}
+                  aria-label={row.decreaseLabel}
+                  onclick={handleDecrease}
+                >
+                  –
+                </button>
+                <span class="qty__value">{row.quantity}</span>
+                <button
+                  type="button"
+                  class="qty__btn"
+                  data-id={row.id}
+                  aria-label={row.increaseLabel}
+                  onclick={handleIncrease}
+                >
+                  +
+                </button>
+              </div>
+            </div>
+            <div class="cart-row__side">
+              <button
+                type="button"
+                class="cart-row__remove"
+                data-id={row.id}
+                aria-label={row.removeLabel}
+                onclick={handleRemove}
+              >
+                ✕
+              </button>
+              <div class="cart-row__total">{row.lineTotalLabel}</div>
+            </div>
+          </li>
+        </template>
+      </ul>
+    </template>
+
+    <footer class="cart__footer">
+      <div class="cart__sum">
+        <span>Tổng tiền</span>
+        <strong>{totalLabel}</strong>
+      </div>
+      <button type="button" class="cart__checkout" disabled>Đặt hàng</button>
+    </footer>
+  </section>
+</template>

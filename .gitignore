@@ -46,3 +46,9 @@ $RECYCLE.BIN/
 **/__pycache__/
 **/.venv/
 **/venv/
+
+#Claude
+/.claude
+skills-lock.json
+/design
+CLAUDE.md
