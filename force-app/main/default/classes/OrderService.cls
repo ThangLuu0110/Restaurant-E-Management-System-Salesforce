@@ -1,15 +1,35 @@
 public with sharing class OrderService {
+  @TestVisible
+  private static final String ERROR_MISSING_TABLE = 'Không xác định được bàn, vui lòng quét lại mã QR.';
+  @TestVisible
+  private static final String ERROR_EMPTY_ORDER = 'Giỏ hàng đang trống.';
+  @TestVisible
+  private static final String ERROR_INVALID_QUANTITY = 'Số lượng mỗi món phải lớn hơn 0.';
+  @TestVisible
+  private static final String ERROR_PUBLISH_FAILED = 'Không gửi được đơn, vui lòng thử lại.';
+
+  // Phải dùng property { get; set; }: dữ liệu gửi từ LWC chỉ được gán vào
+  // property có @AuraEnabled, biến thường sẽ luôn nhận null.
   public class OrderItemWrapper {
     @AuraEnabled
-    public Id menuItemId;
+    public Id menuItemId { get; set; }
     @AuraEnabled
-    public Decimal quantity;
+    public Decimal quantity { get; set; }
     @AuraEnabled
-    public String specialInstructions;
+    public String specialInstructions { get; set; }
   }
 
+  /**
+   * Kiểm tra đơn rồi publish Order_Placed__e. Việc tạo Order_Request__c và
+   * Order_Item__c do OrderPlacedEventHandler thực hiện (chạy bằng Automated
+   * Process user), vì guest không tạo được bản ghi con Master-Detail.
+   * Các lỗi phát hiện được ở đây (bàn, giỏ trống, số lượng, món đã hết) được
+   * báo ngay cho khách.
+   */
   @AuraEnabled
   public static void placeOrder(Id tableId, List<OrderItemWrapper> orderItems) {
+    validateInput(tableId, orderItems);
+
     /**
      * Tập hợp ID các món ăn trong menu được gọi
      * Kiểm tra xem có món không khả thi không, nếu có dừng việc gọi món
@@ -20,18 +40,13 @@ public with sharing class OrderService {
       menuItemIds.add(orderItem.menuItemId);
     }
 
-    Map<Id, Menu_Item__c> menuById = new Map<Id, Menu_Item__c>(
-      [
-        SELECT Id, Name, Price__c, Is_Available__c
-        FROM Menu_Item__c
-        WHERE Id IN :menuItemIds
-      ]
-    );
+    Map<Id, Menu_Item__c> menuById = new OrderDataAccess()
+      .findMenuItems(menuItemIds);
 
     for (OrderItemWrapper orderItem : orderItems) {
       Menu_Item__c menuItem = menuById.get(orderItem.menuItemId);
       if (menuItem == null || !menuItem.Is_Available__c) {
-        throw new AuraHandledException(
+        throw buildError(
           'Món "' +
             (menuItem != null ? menuItem.Name : orderItem.menuItemId) +
             '" hiện đã hết, vui lòng bỏ khỏi giỏ và gửi lại đơn.'
@@ -39,31 +54,68 @@ public with sharing class OrderService {
       }
     }
 
-    /**
-     * Thực hiện tạo Order_Request__c với Status__c = 'Placed'
-     * Tạo danh sách các Order_Item__c dựa trên các món được đặt
-     */
-
-    Order_Request__c newOrderRequest = new Order_Request__c(
-      Table__c = tableId,
-      Status__c = 'Placed',
-      Order_Time__c = System.now()
-    );
-    insert newOrderRequest;
-
-    List<Order_Item__c> newOrderedItems = new List<Order_Item__c>();
+    // Chuẩn hoá ghi chú trước khi gửi: bỏ khoảng trắng thừa, rỗng thành null
     for (OrderItemWrapper orderItem : orderItems) {
-      newOrderedItems.add(
-        new Order_Item__c(
-          Order__c = newOrderRequest.Id,
-          Menu_Item__c = orderItem.menuItemId,
-          Quantity__c = orderItem.quantity,
-          Special_Instructions__c = orderItem.specialInstructions,
-          Status__c = 'Pending'
+      orderItem.specialInstructions = String.isBlank(
+          orderItem.specialInstructions
         )
-      );
+        ? null
+        : orderItem.specialInstructions.trim();
     }
 
-    insert newOrderedItems;
+    Database.SaveResult result = EventBus.publish(
+      new Order_Placed__e(
+        Table_Id__c = tableId,
+        Items_JSON__c = JSON.serialize(orderItems)
+      )
+    );
+    if (!result.isSuccess()) {
+      throw buildError(ERROR_PUBLISH_FAILED);
+    }
+  }
+
+  private static void validateInput(
+    Id tableId,
+    List<OrderItemWrapper> orderItems
+  ) {
+    if (tableId == null) {
+      throw buildError(ERROR_MISSING_TABLE);
+    }
+    if (orderItems == null || orderItems.isEmpty()) {
+      throw buildError(ERROR_EMPTY_ORDER);
+    }
+    for (OrderItemWrapper orderItem : orderItems) {
+      if (
+        orderItem == null ||
+        orderItem.quantity == null ||
+        orderItem.quantity <= 0
+      ) {
+        throw buildError(ERROR_INVALID_QUANTITY);
+      }
+    }
+  }
+
+  // setMessage để getMessage() trả về đúng nội dung (Apex test và log đọc được)
+  private static AuraHandledException buildError(String message) {
+    AuraHandledException error = new AuraHandledException(message);
+    error.setMessage(message);
+    return error;
+  }
+
+  /**
+   * Đọc món without sharing: tình trạng món được quyết định bởi
+   * Is_Available__c, không phụ thuộc vào việc guest có được share bản ghi
+   * hay không.
+   */
+  private without sharing class OrderDataAccess {
+    Map<Id, Menu_Item__c> findMenuItems(Set<Id> menuItemIds) {
+      return new Map<Id, Menu_Item__c>(
+        [
+          SELECT Id, Name, Is_Available__c
+          FROM Menu_Item__c
+          WHERE Id IN :menuItemIds
+        ]
+      );
+    }
   }
 }

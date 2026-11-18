@@ -59,6 +59,11 @@ private class OrderServiceTest {
       [SELECT COUNT() FROM Order_Item__c],
       'Không được tạo Order_Item__c khi đơn bị từ chối'
     );
+    Assert.areEqual(
+      0,
+      [SELECT COUNT() FROM Order_Error_Log__c],
+      'Đơn bị từ chối ngay tại OrderService thì không publish event, không có log'
+    );
   }
 
   // ---------- Happy path ----------
@@ -77,7 +82,13 @@ private class OrderServiceTest {
     Datetime beforeCall = System.now();
     Test.startTest();
     OrderService.placeOrder(tableId, items);
-    Test.stopTest();
+    // Chưa deliver event thì chưa có đơn nào được tạo
+    Assert.areEqual(
+      0,
+      [SELECT COUNT() FROM Order_Request__c],
+      'Đơn chỉ được tạo khi Order_Placed__e được xử lý'
+    );
+    Test.stopTest(); // deliver Order_Placed__e -> OrderPlacedEventTrigger
 
     List<Order_Request__c> orders = [
       SELECT Id, Table__c, Status__c, Order_Time__c
@@ -243,5 +254,94 @@ private class OrderServiceTest {
       'Phải ném AuraHandledException khi món không tồn tại'
     );
     assertNothingInserted();
+  }
+
+  @IsTest
+  static void placeOrder_trimsNoteAndConvertsBlankToNull() {
+    Id phoId = getMenuItemId('Pho Bo');
+    Id traDaId = getMenuItemId('Tra Da');
+
+    Test.startTest();
+    OrderService.placeOrder(
+      getTableId(),
+      new List<OrderService.OrderItemWrapper>{
+        buildItem(phoId, 1, '  Ít cay  '),
+        buildItem(traDaId, 1, '   ')
+      }
+    );
+    Test.stopTest();
+
+    Assert.areEqual(
+      'Ít cay',
+      [
+        SELECT Special_Instructions__c
+        FROM Order_Item__c
+        WHERE Menu_Item__c = :phoId
+      ]
+      .Special_Instructions__c,
+      'Ghi chú phải được bỏ khoảng trắng thừa'
+    );
+    Assert.isNull(
+      [
+        SELECT Special_Instructions__c
+        FROM Order_Item__c
+        WHERE Menu_Item__c = :traDaId
+      ]
+      .Special_Instructions__c,
+      'Ghi chú chỉ có khoảng trắng phải lưu là null'
+    );
+  }
+
+  // ---------- Validate input ----------
+
+  private static void assertRejected(
+    Id tableId,
+    List<OrderService.OrderItemWrapper> items,
+    String expectedMessage
+  ) {
+    String actualMessage;
+    try {
+      OrderService.placeOrder(tableId, items);
+    } catch (AuraHandledException e) {
+      actualMessage = e.getMessage();
+    }
+    Assert.areEqual(expectedMessage, actualMessage);
+    assertNothingInserted();
+  }
+
+  @IsTest
+  static void placeOrder_missingTable_throws() {
+    assertRejected(
+      null,
+      new List<OrderService.OrderItemWrapper>{
+        buildItem(getMenuItemId('Pho Bo'), 1, null)
+      },
+      OrderService.ERROR_MISSING_TABLE
+    );
+  }
+
+  @IsTest
+  static void placeOrder_emptyOrNullItems_throws() {
+    assertRejected(
+      getTableId(),
+      new List<OrderService.OrderItemWrapper>(),
+      OrderService.ERROR_EMPTY_ORDER
+    );
+    assertRejected(getTableId(), null, OrderService.ERROR_EMPTY_ORDER);
+  }
+
+  @IsTest
+  static void placeOrder_invalidQuantity_throws() {
+    Id phoId = getMenuItemId('Pho Bo');
+    assertRejected(
+      getTableId(),
+      new List<OrderService.OrderItemWrapper>{ buildItem(phoId, 0, null) },
+      OrderService.ERROR_INVALID_QUANTITY
+    );
+    assertRejected(
+      getTableId(),
+      new List<OrderService.OrderItemWrapper>{ buildItem(phoId, null, null) },
+      OrderService.ERROR_INVALID_QUANTITY
+    );
   }
 }

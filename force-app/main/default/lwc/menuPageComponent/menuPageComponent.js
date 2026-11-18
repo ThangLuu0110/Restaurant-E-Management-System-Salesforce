@@ -1,13 +1,19 @@
 import { LightningElement, api, wire } from "lwc";
+import { CurrentPageReference } from "lightning/navigation";
 import getMenuItems from "@salesforce/apex/MenuController.getMenuItems";
 import getCategoryOptions from "@salesforce/apex/MenuController.getCategoryOptions";
+import getTableIdByNumber from "@salesforce/apex/MenuController.getTableIdByNumber";
+import placeOrder from "@salesforce/apex/OrderService.placeOrder";
 import FOOD_IMAGES from "@salesforce/resourceUrl/FoodImages";
-import { formatPrice } from "c/cartDropdown";
+import { formatPrice, NOTE_MAX_LENGTH } from "c/cartDropdown";
 
 const FOLDER = "food-images";
 const SEARCH_DELAY_MS = 300;
 const TOAST_DURATION_MS = 2500;
+const ERROR_TOAST_DURATION_MS = 5000;
+const DEFAULT_ORDER_ERROR = "Đặt hàng không thành công, vui lòng thử lại.";
 const CART_STORAGE_KEY = "rems_cart";
+const TABLE_NUMBER_PATTERN = /^\d{1,10}$/;
 
 // Chuẩn hóa chuỗi để so sánh: chữ thường, bỏ dấu tiếng Việt, bỏ khoảng trắng đầu/cuối
 function normalizeText(value) {
@@ -29,11 +35,21 @@ export default class MenuPageComponent extends LightningElement {
   searchTimeout;
   error;
 
-  // Giỏ hàng: [{ id, name, price, imageSrc, quantity }]
+  // Giỏ hàng: [{ id, name, price, imageSrc, quantity, note }]
   cartItems = [];
   isCartOpen = false;
   toastMessage = "";
+  toastVariant = "success"; // success | error
   toastTimeout;
+
+  // Đặt hàng
+  isConfirmOpen = false;
+  isSubmitting = false;
+
+  // Bàn lấy từ URL (?tableId=03): tableId (Id bản ghi) dùng khi đặt hàng
+  tableNumber;
+  tableId;
+  isTableInvalid = false;
 
   connectedCallback() {
     this.cartItems = this.loadCart();
@@ -49,6 +65,38 @@ export default class MenuPageComponent extends LightningElement {
     clearTimeout(this.toastTimeout);
     document.removeEventListener("click", this.handleDocumentClick);
     document.removeEventListener("keydown", this.handleDocumentKeydown);
+  }
+
+  // 0) Đọc số bàn trên URL rồi tra Id của Table__c theo Name (Table-03)
+  @wire(CurrentPageReference)
+  wiredPageRef(pageRef) {
+    const rawNumber = (pageRef?.state?.tableId || "").trim();
+    if (rawNumber === this.tableNumber) {
+      return;
+    }
+    this.tableNumber = rawNumber;
+    this.resolveTableId(rawNumber);
+  }
+
+  async resolveTableId(tableNumber) {
+    this.tableId = undefined;
+    if (!TABLE_NUMBER_PATTERN.test(tableNumber)) {
+      this.isTableInvalid = true;
+      return;
+    }
+
+    try {
+      const tableId = await getTableIdByNumber({ tableNumber });
+      // Bỏ qua kết quả cũ nếu URL đã đổi trong lúc chờ Apex
+      if (tableNumber !== this.tableNumber) {
+        return;
+      }
+      this.tableId = tableId || undefined;
+      this.isTableInvalid = !tableId;
+    } catch (error) {
+      this.isTableInvalid = true;
+      console.error("Không lấy được thông tin bàn", error);
+    }
   }
 
   // 1) Lấy giá trị picklist Category__c từ Apex (MenuController.getCategoryOptions)
@@ -187,9 +235,25 @@ export default class MenuPageComponent extends LightningElement {
   }
 
   handleDocumentKeydown(event) {
-    if (event.key === "Escape" && this.isCartOpen) {
+    if (event.key !== "Escape") {
+      return;
+    }
+    if (this.isConfirmOpen) {
+      this.handleCancelOrder();
+    } else if (this.isCartOpen) {
       this.isCartOpen = false;
     }
+  }
+
+  handleNoteChange(event) {
+    const { id, note } = event.detail;
+    this.updateCart(
+      this.cartItems.map((item) => {
+        return item.id === id
+          ? { ...item, note: (note || "").slice(0, NOTE_MAX_LENGTH) }
+          : item;
+      })
+    );
   }
 
   handleQuantityChange(event) {
@@ -243,17 +307,99 @@ export default class MenuPageComponent extends LightningElement {
     }
   }
 
-  // ---------- 6) Thông báo nhỏ ----------
+  // ---------- 6) Đặt hàng ----------
+  get canOrder() {
+    return !!this.tableId;
+  }
+
+  get cartTotalLabel() {
+    const total = this.cartItems.reduce(
+      (sum, item) => sum + item.price * item.quantity,
+      0
+    );
+    return formatPrice(total);
+  }
+
+  get confirmSubmitLabel() {
+    return this.isSubmitting ? "Đang gửi..." : "Xác nhận đặt hàng";
+  }
+
+  // Bước 1: bấm "Đặt hàng" trong giỏ -> mở hộp xác nhận
+  handlePlaceOrderRequest() {
+    if (!this.canOrder || !this.hasCartItems || this.isSubmitting) {
+      return;
+    }
+    this.isCartOpen = false;
+    this.isConfirmOpen = true;
+  }
+
+  handleCancelOrder() {
+    if (!this.isSubmitting) {
+      this.isConfirmOpen = false;
+    }
+  }
+
+  // Click trong hộp xác nhận không được đóng hộp (chỉ click nền mới đóng)
+  handleConfirmDialogClick(event) {
+    event.stopPropagation();
+  }
+
+  // Bước 2: xác nhận -> gọi OrderService.placeOrder
+  async handleConfirmOrder() {
+    if (this.isSubmitting) {
+      return;
+    }
+    this.isSubmitting = true;
+
+    const orderItems = this.cartItems.map((item) => ({
+      menuItemId: item.id,
+      quantity: item.quantity,
+      specialInstructions: item.note ? item.note.trim() : null
+    }));
+
+    try {
+      console.log("Đặt hàng", this.tableId, orderItems);
+      await placeOrder({ tableId: this.tableId, orderItems });
+      this.updateCart([]);
+      this.isConfirmOpen = false;
+      this.showToast("Đặt hàng thành công!");
+    } catch (error) {
+      console.log("Đặt hàng thất bại", error);
+      // Giữ nguyên giỏ để khách sửa rồi gửi lại
+      this.isConfirmOpen = false;
+      this.showToast(this.getErrorMessage(error), "error");
+    } finally {
+      this.isSubmitting = false;
+    }
+  }
+
+  getErrorMessage(error) {
+    return error?.body?.message || DEFAULT_ORDER_ERROR;
+  }
+
+  // ---------- 7) Thông báo nhỏ ----------
   get hasToast() {
     return !!this.toastMessage;
   }
 
-  showToast(message) {
+  get toastClass() {
+    return this.toastVariant === "error" ? "toast toast--error" : "toast";
+  }
+
+  get toastRole() {
+    return this.toastVariant === "error" ? "alert" : "status";
+  }
+
+  showToast(message, variant = "success") {
     this.toastMessage = message;
+    this.toastVariant = variant;
     clearTimeout(this.toastTimeout);
     // eslint-disable-next-line @lwc/lwc/no-async-operation
-    this.toastTimeout = setTimeout(() => {
-      this.toastMessage = "";
-    }, TOAST_DURATION_MS);
+    this.toastTimeout = setTimeout(
+      () => {
+        this.toastMessage = "";
+      },
+      variant === "error" ? ERROR_TOAST_DURATION_MS : TOAST_DURATION_MS
+    );
   }
 }
