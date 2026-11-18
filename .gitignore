@@ -48,6 +48,7 @@ $RECYCLE.BIN/
 **/venv/
 
 #Claude
+/docs
 /.claude
 skills-lock.json
 /design
