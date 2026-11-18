@@ -178,6 +178,13 @@ private class OrderPlacedEventHandlerTest {
       [SELECT COUNT() FROM Order_Error_Log__c],
       'Đơn hợp lệ thì không có log'
     );
+
+    Assert.areEqual(
+      order.Id,
+      [SELECT Current_Order__c FROM Table__c WHERE Id = :tableId]
+      .Current_Order__c,
+      'Table__c.Current_Order__c phải trỏ về Order vừa tạo'
+    );
   }
 
   @IsTest
