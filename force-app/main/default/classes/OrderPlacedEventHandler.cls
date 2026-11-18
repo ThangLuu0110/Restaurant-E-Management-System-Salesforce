@@ -24,6 +24,8 @@ public without sharing class OrderPlacedEventHandler {
   private static final String ERROR_INSERT_ORDER = 'Không tạo được Order_Request__c: ';
   @TestVisible
   private static final String ERROR_INSERT_ITEM = 'Không tạo được Order_Item__c, đơn đã bị huỷ: ';
+  @TestVisible
+  private static final String ERROR_UPDATE_TABLE = 'Không cập nhật được Current_Order__c cho bàn: ';
 
   private static final String ORDER_STATUS_PLACED = 'Placed';
   private static final String ITEM_STATUS_PENDING = 'Pending';
@@ -177,7 +179,35 @@ public without sharing class OrderPlacedEventHandler {
         );
       }
     }
+    updateTableCurrentOrder(createdOrders, logs);
     return createdOrders;
+  }
+
+  /** Gắn Order_Request__c vừa tạo vào Table__c.Current_Order__c tương ứng. */
+  private static void updateTableCurrentOrder(
+    List<PendingOrder> createdOrders,
+    List<Order_Error_Log__c> logs
+  ) {
+    if (createdOrders.isEmpty()) {
+      return;
+    }
+    List<Table__c> tables = new List<Table__c>();
+    for (PendingOrder pending : createdOrders) {
+      tables.add(
+        new Table__c(Id = pending.tableId, Current_Order__c = pending.order.Id)
+      );
+    }
+    List<Database.SaveResult> results = Database.update(tables, false);
+    for (Integer i = 0; i < results.size(); i++) {
+      if (!results[i].isSuccess()) {
+        logs.add(
+          buildLog(
+            createdOrders[i].event,
+            ERROR_UPDATE_TABLE + joinErrors(results[i].getErrors())
+          )
+        );
+      }
+    }
   }
 
   // ---------- 4. Tạo Order_Item__c, huỷ đơn nếu có món không tạo được ----------
