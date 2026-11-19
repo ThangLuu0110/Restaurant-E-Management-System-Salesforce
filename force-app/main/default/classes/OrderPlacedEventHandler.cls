@@ -1,14 +1,19 @@
 /**
- * Xử lý Order_Placed__e: tạo Order_Request__c (Placed) và các Order_Item__c
- * (Pending) từ đơn khách gửi ở trang menu.
+ * Xử lý Order_Placed__e: gắn các món khách gửi từ trang menu vào đơn của bàn.
  *
+ * - Bàn chưa có đơn đang mở (Current_Order__c trống hoặc đơn đã Paid /
+ *   Canceled): tạo Order_Request__c (Placed) mới và gắn vào
+ *   Table__c.Current_Order__c.
+ * - Bàn đã có đơn đang mở: thêm Order_Item__c (Pending) vào đơn đó (gọi thêm
+ *   món). Đơn đang Ready / Served được đưa về Placed để bếp biết có món mới.
+ * - Nhiều event của cùng 1 bàn trong 1 batch dùng chung 1 đơn.
  * - Chạy bằng Automated Process user, without sharing để không phụ thuộc vào
  *   sharing của bản ghi (giống mọi trigger chạy ở system mode).
  * - Kiểm tra lại dữ liệu vì trạng thái món có thể đổi sau khi khách gửi đơn.
- * - Đơn nào lỗi thì KHÔNG tạo (kể cả khi chỉ 1 món lỗi), chỉ ghi
- *   Order_Error_Log__c để admin xem. Các đơn khác trong cùng batch vẫn được xử lý.
- * - Event có Order_Id__c là yêu cầu gọi thêm món (OrderService.addNewItem):
- *   món được thêm vào đơn có sẵn; nếu lỗi chỉ huỷ các món vừa thêm.
+ * - Mỗi lần gửi là tất cả hoặc không: chỉ 1 món lỗi thì mọi món của lần gửi
+ *   đó bị huỷ, các món đã gọi trước đó vẫn giữ nguyên. Đơn mới không còn món
+ *   nào thì bị xoá. Lỗi chỉ ghi Order_Error_Log__c để admin xem, các event
+ *   khác trong cùng batch vẫn được xử lý.
  * - Bulk-safe: số SOQL/DML cố định, không phụ thuộc số lượng event.
  */
 public without sharing class OrderPlacedEventHandler {
@@ -27,40 +32,57 @@ public without sharing class OrderPlacedEventHandler {
   @TestVisible
   private static final String ERROR_INSERT_ITEM = 'Không tạo được Order_Item__c, đơn đã bị huỷ: ';
   @TestVisible
+  private static final String ERROR_INSERT_ADDED_ITEM = 'Không thêm được món vào đơn, các món của lần gọi này đã bị huỷ: ';
+  @TestVisible
   private static final String ERROR_UPDATE_TABLE = 'Không cập nhật được Current_Order__c cho bàn: ';
   @TestVisible
-  private static final String ERROR_ORDER_NOT_FOUND = 'Không tìm thấy đơn để gọi thêm hoặc đơn không thuộc bàn này.';
+  private static final String ERROR_REOPEN_ORDER = 'Không đưa được đơn về Placed sau khi gọi thêm: ';
+
+  /** Đơn ở trạng thái này coi như đã đóng, lần gọi tiếp theo tạo đơn mới. */
   @TestVisible
-  private static final String ERROR_ORDER_CLOSED = 'Đơn đã thanh toán hoặc đã huỷ, không thể gọi thêm món: ';
-  @TestVisible
-  private static final String ERROR_INSERT_ADDED_ITEM = 'Không thêm được món vào đơn, các món gọi thêm đã bị huỷ: ';
+  private static final Set<String> CLOSED_ORDER_STATUSES = new Set<String>{
+    'Paid',
+    'Canceled'
+  };
+  /** Đơn ở trạng thái này được đưa về Placed khi khách gọi thêm món. */
+  private static final Set<String> REOPEN_ORDER_STATUSES = new Set<String>{
+    'Ready',
+    'Served'
+  };
 
   private static final String ORDER_STATUS_PLACED = 'Placed';
   private static final String ITEM_STATUS_PENDING = 'Pending';
   private static final Integer PAYLOAD_MAX_LENGTH = 131072;
   private static final Integer MESSAGE_MAX_LENGTH = 32768;
 
-  /** Một đơn đang xử lý: event gốc cùng dữ liệu đã đọc được. */
+  /** Một lần gửi món đang xử lý: event gốc cùng dữ liệu đã đọc được. */
   private class PendingOrder {
     Order_Placed__e event;
     Id tableId;
-    // Khác null khi khách gọi thêm món vào đơn đã đặt
-    Id existingOrderId;
     List<OrderService.OrderItemWrapper> items;
+    // Đơn mà các món được gắn vào. Các lần gửi của cùng 1 bàn dùng chung
+    // 1 instance nên Id gán sau khi insert được thấy ở tất cả.
     Order_Request__c order;
-
-    Boolean isAddOn() {
-      return existingOrderId != null;
-    }
+    // true: lần gửi này tạo Order_Request__c mới; false: gọi thêm vào đơn có sẵn
+    Boolean createsOrder = false;
+    // Status__c của đơn có sẵn, dùng để quyết định có đưa về Placed hay không
+    String existingStatus;
+    Boolean failed = false;
   }
 
   public static void handle(List<Order_Placed__e> events) {
     List<Order_Error_Log__c> logs = new List<Order_Error_Log__c>();
 
     List<PendingOrder> pendingOrders = parseEvents(events, logs);
-    List<PendingOrder> validOrders = validate(pendingOrders, logs);
-    List<PendingOrder> createdOrders = insertOrders(validOrders, logs);
-    insertOrderItems(createdOrders, logs);
+    Map<Id, Table__c> tableById = queryTables(pendingOrders);
+    List<PendingOrder> validOrders = validate(pendingOrders, tableById, logs);
+    List<PendingOrder> assignedOrders = assignOrders(
+      validOrders,
+      tableById,
+      logs
+    );
+    insertOrderItems(assignedOrders, logs);
+    reopenOrders(assignedOrders, logs);
 
     if (!logs.isEmpty()) {
       Database.insert(logs, false);
@@ -79,9 +101,6 @@ public without sharing class OrderPlacedEventHandler {
       pending.event = event;
       try {
         pending.tableId = Id.valueOf(event.Table_Id__c);
-        pending.existingOrderId = String.isBlank(event.Order_Id__c)
-          ? null
-          : Id.valueOf(event.Order_Id__c);
         pending.items = (List<OrderService.OrderItemWrapper>) JSON.deserialize(
           event.Items_JSON__c,
           List<OrderService.OrderItemWrapper>.class
@@ -97,29 +116,36 @@ public without sharing class OrderPlacedEventHandler {
 
   // ---------- 2. Kiểm tra bàn, số lượng và tình trạng món ----------
 
-  private static List<PendingOrder> validate(
-    List<PendingOrder> pendingOrders,
-    List<Order_Error_Log__c> logs
+  /** Bàn kèm đơn hiện tại, đọc lúc xử lý event để có trạng thái mới nhất. */
+  private static Map<Id, Table__c> queryTables(
+    List<PendingOrder> pendingOrders
   ) {
     Set<Id> tableIds = new Set<Id>();
-    Set<Id> menuItemIds = new Set<Id>();
-    Set<Id> existingOrderIds = new Set<Id>();
     for (PendingOrder pending : pendingOrders) {
       tableIds.add(pending.tableId);
-      if (pending.isAddOn()) {
-        existingOrderIds.add(pending.existingOrderId);
-      }
+    }
+    return new Map<Id, Table__c>(
+      [
+        SELECT Id, Current_Order__c, Current_Order__r.Status__c
+        FROM Table__c
+        WHERE Id IN :tableIds
+      ]
+    );
+  }
+
+  private static List<PendingOrder> validate(
+    List<PendingOrder> pendingOrders,
+    Map<Id, Table__c> tableById,
+    List<Order_Error_Log__c> logs
+  ) {
+    Set<Id> menuItemIds = new Set<Id>();
+    for (PendingOrder pending : pendingOrders) {
       for (OrderService.OrderItemWrapper item : nullSafe(pending.items)) {
         if (item != null && item.menuItemId != null) {
           menuItemIds.add(item.menuItemId);
         }
       }
     }
-
-    Set<Id> existingTableIds = new Map<Id, Table__c>(
-        [SELECT Id FROM Table__c WHERE Id IN :tableIds]
-      )
-      .keySet();
     Map<Id, Menu_Item__c> menuById = new Map<Id, Menu_Item__c>(
       [
         SELECT Id, Name, Is_Available__c
@@ -127,22 +153,10 @@ public without sharing class OrderPlacedEventHandler {
         WHERE Id IN :menuItemIds
       ]
     );
-    Map<Id, Order_Request__c> existingOrderById = new Map<Id, Order_Request__c>(
-      [
-        SELECT Id, Table__c, Status__c
-        FROM Order_Request__c
-        WHERE Id IN :existingOrderIds
-      ]
-    );
 
     List<PendingOrder> validOrders = new List<PendingOrder>();
     for (PendingOrder pending : pendingOrders) {
-      String error = findError(
-        pending,
-        existingTableIds,
-        menuById,
-        existingOrderById
-      );
+      String error = findError(pending, tableById.keySet(), menuById);
       if (error == null) {
         validOrders.add(pending);
       } else {
@@ -152,25 +166,14 @@ public without sharing class OrderPlacedEventHandler {
     return validOrders;
   }
 
-  /** Trả về lý do lỗi đầu tiên của đơn, null nếu đơn hợp lệ. */
+  /** Trả về lý do lỗi đầu tiên của lần gửi, null nếu hợp lệ. */
   private static String findError(
     PendingOrder pending,
     Set<Id> existingTableIds,
-    Map<Id, Menu_Item__c> menuById,
-    Map<Id, Order_Request__c> existingOrderById
+    Map<Id, Menu_Item__c> menuById
   ) {
     if (!existingTableIds.contains(pending.tableId)) {
       return ERROR_TABLE_NOT_FOUND;
-    }
-    // Trạng thái đơn có thể đã đổi sau khi khách gửi yêu cầu gọi thêm
-    if (pending.isAddOn()) {
-      Order_Request__c order = existingOrderById.get(pending.existingOrderId);
-      if (order == null || order.Table__c != pending.tableId) {
-        return ERROR_ORDER_NOT_FOUND;
-      }
-      if (OrderService.CLOSED_ORDER_STATUSES.contains(order.Status__c)) {
-        return ERROR_ORDER_CLOSED + order.Status__c;
-      }
     }
     if (pending.items == null || pending.items.isEmpty()) {
       return ERROR_EMPTY_ORDER;
@@ -188,77 +191,105 @@ public without sharing class OrderPlacedEventHandler {
     return null;
   }
 
-  // ---------- 3. Tạo Order_Request__c (bỏ qua đơn gọi thêm) ----------
+  // ---------- 3. Chọn đơn: dùng đơn đang mở của bàn hoặc tạo đơn mới ----------
 
-  private static List<PendingOrder> insertOrders(
+  private static List<PendingOrder> assignOrders(
     List<PendingOrder> validOrders,
+    Map<Id, Table__c> tableById,
     List<Order_Error_Log__c> logs
   ) {
-    // Đơn gọi thêm dùng lại Order_Request__c có sẵn, không tạo mới và không
-    // cập nhật Current_Order__c của bàn
-    List<PendingOrder> addOnOrders = new List<PendingOrder>();
-    List<PendingOrder> newOrders = new List<PendingOrder>();
+    Map<Id, Order_Request__c> orderByTable = new Map<Id, Order_Request__c>();
+    List<PendingOrder> creators = new List<PendingOrder>();
     for (PendingOrder pending : validOrders) {
-      if (pending.isAddOn()) {
-        pending.order = new Order_Request__c(Id = pending.existingOrderId);
-        addOnOrders.add(pending);
-      } else {
-        newOrders.add(pending);
+      Order_Request__c order = orderByTable.get(pending.tableId);
+      if (order == null) {
+        Table__c table = tableById.get(pending.tableId);
+        if (hasOpenOrder(table)) {
+          order = new Order_Request__c(Id = table.Current_Order__c);
+        } else {
+          order = new Order_Request__c(
+            Table__c = pending.tableId,
+            Status__c = ORDER_STATUS_PLACED,
+            Order_Time__c = pending.event.CreatedDate != null
+              ? pending.event.CreatedDate
+              : System.now()
+          );
+          pending.createsOrder = true;
+          creators.add(pending);
+        }
+        orderByTable.put(pending.tableId, order);
+      }
+      pending.order = order;
+      // Lúc này chỉ đơn có sẵn mới có Id (đơn mới chưa được insert)
+      if (order.Id != null) {
+        pending.existingStatus = tableById.get(pending.tableId)
+          .Current_Order__r.Status__c;
       }
     }
 
-    List<PendingOrder> createdOrders = new List<PendingOrder>(addOnOrders);
-    createdOrders.addAll(insertNewOrders(newOrders, logs));
-    return createdOrders;
-  }
+    Map<Id, String> insertErrorByTable = insertNewOrders(creators, logs);
 
-  private static List<PendingOrder> insertNewOrders(
-    List<PendingOrder> validOrders,
-    List<Order_Error_Log__c> logs
-  ) {
-    List<Order_Request__c> orders = new List<Order_Request__c>();
+    List<PendingOrder> assignedOrders = new List<PendingOrder>();
     for (PendingOrder pending : validOrders) {
-      pending.order = new Order_Request__c(
-        Table__c = pending.tableId,
-        Status__c = ORDER_STATUS_PLACED,
-        Order_Time__c = pending.event.CreatedDate != null
-          ? pending.event.CreatedDate
-          : System.now()
-      );
-      orders.add(pending.order);
-    }
-    if (orders.isEmpty()) {
-      return validOrders;
-    }
-
-    List<PendingOrder> createdOrders = new List<PendingOrder>();
-    List<Database.SaveResult> results = Database.insert(orders, false);
-    for (Integer i = 0; i < results.size(); i++) {
-      if (results[i].isSuccess()) {
-        createdOrders.add(validOrders[i]);
+      if (pending.order.Id != null) {
+        assignedOrders.add(pending);
       } else {
         logs.add(
           buildLog(
-            validOrders[i].event,
-            ERROR_INSERT_ORDER + joinErrors(results[i].getErrors())
+            pending.event,
+            ERROR_INSERT_ORDER + insertErrorByTable.get(pending.tableId)
           )
         );
       }
     }
-    updateTableCurrentOrder(createdOrders, logs);
-    return createdOrders;
+    return assignedOrders;
+  }
+
+  private static Boolean hasOpenOrder(Table__c table) {
+    return table.Current_Order__c != null &&
+      !CLOSED_ORDER_STATUSES.contains(table.Current_Order__r.Status__c);
+  }
+
+  /** Insert đơn mới, trả về lỗi theo bàn cho các đơn không tạo được. */
+  private static Map<Id, String> insertNewOrders(
+    List<PendingOrder> creators,
+    List<Order_Error_Log__c> logs
+  ) {
+    Map<Id, String> errorByTable = new Map<Id, String>();
+    if (creators.isEmpty()) {
+      return errorByTable;
+    }
+    List<Order_Request__c> orders = new List<Order_Request__c>();
+    for (PendingOrder pending : creators) {
+      orders.add(pending.order);
+    }
+
+    List<PendingOrder> created = new List<PendingOrder>();
+    List<Database.SaveResult> results = Database.insert(orders, false);
+    for (Integer i = 0; i < results.size(); i++) {
+      if (results[i].isSuccess()) {
+        created.add(creators[i]);
+      } else {
+        errorByTable.put(
+          creators[i].tableId,
+          joinErrors(results[i].getErrors())
+        );
+      }
+    }
+    updateTableCurrentOrder(created, logs);
+    return errorByTable;
   }
 
   /** Gắn Order_Request__c vừa tạo vào Table__c.Current_Order__c tương ứng. */
   private static void updateTableCurrentOrder(
-    List<PendingOrder> createdOrders,
+    List<PendingOrder> created,
     List<Order_Error_Log__c> logs
   ) {
-    if (createdOrders.isEmpty()) {
+    if (created.isEmpty()) {
       return;
     }
     List<Table__c> tables = new List<Table__c>();
-    for (PendingOrder pending : createdOrders) {
+    for (PendingOrder pending : created) {
       tables.add(
         new Table__c(Id = pending.tableId, Current_Order__c = pending.order.Id)
       );
@@ -268,7 +299,7 @@ public without sharing class OrderPlacedEventHandler {
       if (!results[i].isSuccess()) {
         logs.add(
           buildLog(
-            createdOrders[i].event,
+            created[i].event,
             ERROR_UPDATE_TABLE + joinErrors(results[i].getErrors())
           )
         );
@@ -276,17 +307,16 @@ public without sharing class OrderPlacedEventHandler {
     }
   }
 
-  // ---------- 4. Tạo Order_Item__c, huỷ phần đã tạo nếu có món lỗi ----------
-  // Đơn mới: xoá cả Order_Request__c. Đơn gọi thêm: chỉ xoá các món vừa thêm,
-  // giữ nguyên đơn và các món khách đã gọi trước đó.
+  // ---------- 4. Tạo Order_Item__c, huỷ lần gửi nếu có món lỗi ----------
 
   private static void insertOrderItems(
-    List<PendingOrder> createdOrders,
+    List<PendingOrder> assignedOrders,
     List<Order_Error_Log__c> logs
   ) {
     List<Order_Item__c> orderItems = new List<Order_Item__c>();
-    List<PendingOrder> ownerOfItem = new List<PendingOrder>();
-    for (PendingOrder pending : createdOrders) {
+    List<Integer> ownerIndex = new List<Integer>();
+    for (Integer p = 0; p < assignedOrders.size(); p++) {
+      PendingOrder pending = assignedOrders[p];
       for (OrderService.OrderItemWrapper item : pending.items) {
         orderItems.add(
           new Order_Item__c(
@@ -299,65 +329,123 @@ public without sharing class OrderPlacedEventHandler {
             Status__c = ITEM_STATUS_PENDING
           )
         );
-        ownerOfItem.add(pending);
+        ownerIndex.add(p);
       }
     }
     if (orderItems.isEmpty()) {
       return;
     }
 
-    // Gom lỗi theo đơn: 1 đơn chỉ ghi 1 log dù nhiều món lỗi
-    Map<Id, PendingOrder> failedById = new Map<Id, PendingOrder>();
-    Map<Id, List<String>> errorsById = new Map<Id, List<String>>();
-    Map<Id, List<Id>> insertedItemIdsById = new Map<Id, List<Id>>();
+    // Gom kết quả theo lần gửi: 1 lần gửi chỉ ghi 1 log dù nhiều món lỗi
+    Map<Integer, List<Id>> insertedIdsByOwner = new Map<Integer, List<Id>>();
+    Map<Integer, List<String>> errorsByOwner = new Map<Integer, List<String>>();
     List<Database.SaveResult> results = Database.insert(orderItems, false);
     for (Integer i = 0; i < results.size(); i++) {
-      PendingOrder pending = ownerOfItem[i];
-      Id orderId = pending.order.Id;
+      Integer owner = ownerIndex[i];
       if (results[i].isSuccess()) {
-        if (!insertedItemIdsById.containsKey(orderId)) {
-          insertedItemIdsById.put(orderId, new List<Id>());
+        if (!insertedIdsByOwner.containsKey(owner)) {
+          insertedIdsByOwner.put(owner, new List<Id>());
         }
-        insertedItemIdsById.get(orderId).add(results[i].getId());
-        continue;
+        insertedIdsByOwner.get(owner).add(results[i].getId());
+      } else {
+        if (!errorsByOwner.containsKey(owner)) {
+          errorsByOwner.put(owner, new List<String>());
+        }
+        errorsByOwner.get(owner).add(joinErrors(results[i].getErrors()));
       }
-      failedById.put(orderId, pending);
-      if (!errorsById.containsKey(orderId)) {
-        errorsById.put(orderId, new List<String>());
-      }
-      errorsById.get(orderId).add(joinErrors(results[i].getErrors()));
     }
-    if (failedById.isEmpty()) {
+    if (errorsByOwner.isEmpty()) {
       return;
     }
 
-    List<Order_Request__c> ordersToDelete = new List<Order_Request__c>();
+    // Huỷ mọi món của lần gửi bị lỗi, giữ nguyên món của các lần gửi khác
     List<Order_Item__c> itemsToDelete = new List<Order_Item__c>();
-    for (PendingOrder pending : failedById.values()) {
-      Id orderId = pending.order.Id;
-      String errors = String.join(errorsById.get(orderId), '; ');
-      if (pending.isAddOn()) {
-        // Chỉ xoá các món vừa thêm trong lần gọi này
-        for (Id itemId : nullSafeIds(insertedItemIdsById.get(orderId))) {
-          itemsToDelete.add(new Order_Item__c(Id = itemId));
-        }
-        logs.add(buildLog(pending.event, ERROR_INSERT_ADDED_ITEM + errors));
-      } else {
-        // Xoá đơn cha, các Order_Item__c đã tạo bị xoá theo (Master-Detail)
-        ordersToDelete.add(new Order_Request__c(Id = orderId));
-        logs.add(buildLog(pending.event, ERROR_INSERT_ITEM + errors));
+    for (Integer owner : errorsByOwner.keySet()) {
+      assignedOrders[owner].failed = true;
+      for (Id itemId : nullSafeIds(insertedIdsByOwner.get(owner))) {
+        itemsToDelete.add(new Order_Item__c(Id = itemId));
       }
     }
     if (!itemsToDelete.isEmpty()) {
       Database.delete(itemsToDelete, false);
     }
+
+    // Đơn mới tạo mà không còn lần gửi nào thành công thì xoá đơn
+    // (Current_Order__c của bàn tự về null vì lookup là SetNull)
+    Set<Id> keptOrderIds = new Set<Id>();
+    for (PendingOrder pending : assignedOrders) {
+      if (!pending.failed) {
+        keptOrderIds.add(pending.order.Id);
+      }
+    }
+    Map<Id, Order_Request__c> ordersToDelete = new Map<Id, Order_Request__c>();
+    for (PendingOrder pending : assignedOrders) {
+      if (pending.createsOrder && !keptOrderIds.contains(pending.order.Id)) {
+        ordersToDelete.put(
+          pending.order.Id,
+          new Order_Request__c(Id = pending.order.Id)
+        );
+      }
+    }
     if (!ordersToDelete.isEmpty()) {
-      Database.delete(ordersToDelete, false);
+      Database.delete(ordersToDelete.values(), false);
+    }
+
+    for (Integer owner : errorsByOwner.keySet()) {
+      PendingOrder pending = assignedOrders[owner];
+      String errors = String.join(errorsByOwner.get(owner), '; ');
+      logs.add(
+        buildLog(
+          pending.event,
+          (ordersToDelete.containsKey(pending.order.Id)
+            ? ERROR_INSERT_ITEM
+            : ERROR_INSERT_ADDED_ITEM) + errors
+        )
+      );
     }
   }
 
-  private static List<Id> nullSafeIds(List<Id> ids) {
-    return ids == null ? new List<Id>() : ids;
+  // ---------- 5. Đưa đơn Ready / Served về Placed khi có món gọi thêm ----------
+
+  private static void reopenOrders(
+    List<PendingOrder> assignedOrders,
+    List<Order_Error_Log__c> logs
+  ) {
+    Map<Id, PendingOrder> pendingByOrderId = new Map<Id, PendingOrder>();
+    for (PendingOrder pending : assignedOrders) {
+      if (
+        !pending.failed &&
+        REOPEN_ORDER_STATUSES.contains(pending.existingStatus) &&
+        !pendingByOrderId.containsKey(pending.order.Id)
+      ) {
+        pendingByOrderId.put(pending.order.Id, pending);
+      }
+    }
+    if (pendingByOrderId.isEmpty()) {
+      return;
+    }
+
+    List<Order_Request__c> orders = new List<Order_Request__c>();
+    List<PendingOrder> owners = pendingByOrderId.values();
+    for (PendingOrder pending : owners) {
+      orders.add(
+        new Order_Request__c(
+          Id = pending.order.Id,
+          Status__c = ORDER_STATUS_PLACED
+        )
+      );
+    }
+    List<Database.SaveResult> results = Database.update(orders, false);
+    for (Integer i = 0; i < results.size(); i++) {
+      if (!results[i].isSuccess()) {
+        logs.add(
+          buildLog(
+            owners[i].event,
+            ERROR_REOPEN_ORDER + joinErrors(results[i].getErrors())
+          )
+        );
+      }
+    }
   }
 
   // ---------- Tiện ích ----------
@@ -366,6 +454,10 @@ public without sharing class OrderPlacedEventHandler {
     List<OrderService.OrderItemWrapper> items
   ) {
     return items == null ? new List<OrderService.OrderItemWrapper>() : items;
+  }
+
+  private static List<Id> nullSafeIds(List<Id> ids) {
+    return ids == null ? new List<Id>() : ids;
   }
 
   private static String joinErrors(List<Database.Error> errors) {
