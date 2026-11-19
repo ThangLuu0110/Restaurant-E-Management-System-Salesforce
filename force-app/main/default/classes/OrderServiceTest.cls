@@ -345,7 +345,7 @@ private class OrderServiceTest {
     );
   }
 
-  // ---------- addNewItem: gọi thêm món ----------
+  // ---------- Gọi thêm món: dùng lại đơn đang mở của bàn ----------
 
   /** Tạo đơn với 1 món Pho Bo, gắn vào Current_Order__c của bàn. */
   private static Order_Request__c createCurrentOrder(String status) {
@@ -365,197 +365,152 @@ private class OrderServiceTest {
     return order;
   }
 
-  private static String addNewItemError(
-    Id tableId,
-    List<OrderService.OrderItemWrapper> items
-  ) {
-    String message;
-    try {
-      OrderService.addNewItem(tableId, items);
-    } catch (AuraHandledException e) {
-      message = e.getMessage();
-    }
-    return message;
+  private static List<OrderService.OrderItemWrapper> oneTraDa() {
+    return new List<OrderService.OrderItemWrapper>{
+      buildItem(getMenuItemId('Tra Da'), 1, null)
+    };
   }
 
-  /** Đơn bị từ chối tại OrderService: không có đơn/món mới, không có log. */
-  private static void assertOrderUnchanged(Id orderId) {
-    Assert.areEqual(
-      1,
-      [SELECT COUNT() FROM Order_Request__c],
-      'Không được tạo Order_Request__c mới'
-    );
-    Assert.areEqual(
-      1,
-      [SELECT COUNT() FROM Order_Item__c WHERE Order__c = :orderId],
-      'Không được thêm món vào đơn'
-    );
-    Assert.areEqual(
-      0,
-      [SELECT COUNT() FROM Order_Error_Log__c],
-      'Bị từ chối tại OrderService thì không publish event, không có log'
-    );
+  private static Id getCurrentOrderId() {
+    return [SELECT Current_Order__c FROM Table__c WHERE Id = :getTableId()]
+    .Current_Order__c;
   }
 
   @IsTest
-  static void addNewItem_activeOrder_addsItemsToExistingOrder() {
-    Order_Request__c order = createCurrentOrder('Preparing');
+  static void placeOrder_secondTime_addsItemsToFirstOrder() {
     Id tableId = getTableId();
-    Id traDaId = getMenuItemId('Tra Da');
 
+    // Lần 1: tạo đơn
     Test.startTest();
-    OrderService.addNewItem(
+    OrderService.placeOrder(
       tableId,
       new List<OrderService.OrderItemWrapper>{
-        buildItem(traDaId, 2, '  Ít đá  ')
+        buildItem(getMenuItemId('Pho Bo'), 1, null)
       }
     );
-    Test.stopTest(); // deliver Order_Placed__e
+    Test.getEventBus().deliver();
+    Order_Request__c firstOrder = [SELECT Id FROM Order_Request__c];
+
+    // Lần 2: gọi thêm
+    OrderService.placeOrder(tableId, oneTraDa());
+    Test.stopTest();
 
     Assert.areEqual(
       1,
       [SELECT COUNT() FROM Order_Request__c],
       'Gọi thêm không được tạo Order_Request__c mới'
     );
-    List<Order_Item__c> added = [
-      SELECT Order__c, Quantity__c, Special_Instructions__c, Status__c
-      FROM Order_Item__c
-      WHERE Menu_Item__c = :traDaId
-    ];
-    Assert.areEqual(1, added.size(), 'Phải thêm đúng 1 Order_Item__c');
-    Assert.areEqual(
-      order.Id,
-      added[0].Order__c,
-      'Món gọi thêm phải thuộc đơn hiện tại của bàn'
-    );
-    Assert.areEqual(2, added[0].Quantity__c, 'Số lượng phải khớp');
-    Assert.areEqual(
-      'Ít đá',
-      added[0].Special_Instructions__c,
-      'Ghi chú phải được chuẩn hoá'
-    );
-    Assert.areEqual('Pending', added[0].Status__c, 'Món mới phải là Pending');
     Assert.areEqual(
       2,
-      [SELECT COUNT() FROM Order_Item__c WHERE Order__c = :order.Id],
-      'Món cũ phải được giữ nguyên'
+      [SELECT COUNT() FROM Order_Item__c WHERE Order__c = :firstOrder.Id],
+      'Món gọi thêm phải gắn vào đơn đầu tiên'
     );
+    Assert.areEqual(firstOrder.Id, getCurrentOrderId());
+  }
+
+  @IsTest
+  static void placeOrder_openOrder_keepsOrderStatus() {
+    Order_Request__c order = createCurrentOrder('Preparing');
+
+    Test.startTest();
+    OrderService.placeOrder(getTableId(), oneTraDa());
+    Test.stopTest();
+
+    Assert.areEqual(1, [SELECT COUNT() FROM Order_Request__c]);
+    Order_Item__c added = [
+      SELECT Order__c, Status__c
+      FROM Order_Item__c
+      WHERE Menu_Item__c = :getMenuItemId('Tra Da')
+    ];
+    Assert.areEqual(order.Id, added.Order__c, 'Món phải thuộc đơn đang mở');
+    Assert.areEqual('Pending', added.Status__c);
     Assert.areEqual(
-      order.Id,
-      [SELECT Current_Order__c FROM Table__c WHERE Id = :tableId]
-      .Current_Order__c,
-      'Current_Order__c của bàn không đổi'
+      'Preparing',
+      [SELECT Status__c FROM Order_Request__c WHERE Id = :order.Id].Status__c,
+      'Đơn Preparing giữ nguyên trạng thái'
     );
   }
 
   @IsTest
-  static void addNewItem_servedOrder_isAllowed() {
+  static void placeOrder_servedOrder_addsItemsAndReopensOrder() {
     Order_Request__c order = createCurrentOrder('Served');
 
     Test.startTest();
-    OrderService.addNewItem(
-      getTableId(),
-      new List<OrderService.OrderItemWrapper>{
-        buildItem(getMenuItemId('Tra Da'), 1, null)
-      }
-    );
+    OrderService.placeOrder(getTableId(), oneTraDa());
     Test.stopTest();
 
     Assert.areEqual(
       2,
-      [SELECT COUNT() FROM Order_Item__c WHERE Order__c = :order.Id],
-      'Đơn chưa Paid/Canceled thì vẫn được gọi thêm'
+      [SELECT COUNT() FROM Order_Item__c WHERE Order__c = :order.Id]
+    );
+    Assert.areEqual(
+      'Placed',
+      [SELECT Status__c FROM Order_Request__c WHERE Id = :order.Id].Status__c,
+      'Đơn Served có món mới phải về Placed'
     );
   }
 
   @IsTest
-  static void addNewItem_paidOrder_throws() {
-    Order_Request__c order = createCurrentOrder('Paid');
+  static void placeOrder_paidOrder_createsNewOrder() {
+    Order_Request__c paidOrder = createCurrentOrder('Paid');
 
     Test.startTest();
-    String message = addNewItemError(
-      getTableId(),
-      new List<OrderService.OrderItemWrapper>{
-        buildItem(getMenuItemId('Tra Da'), 1, null)
-      }
-    );
+    OrderService.placeOrder(getTableId(), oneTraDa());
     Test.stopTest();
 
-    Assert.areEqual(OrderService.ERROR_ORDER_CLOSED, message);
-    assertOrderUnchanged(order.Id);
+    Assert.areEqual(
+      2,
+      [SELECT COUNT() FROM Order_Request__c],
+      'Đơn đã thanh toán thì lần gọi sau tạo đơn mới'
+    );
+    Id newOrderId = getCurrentOrderId();
+    Assert.areNotEqual(paidOrder.Id, newOrderId, 'Bàn phải trỏ tới đơn mới');
+    Assert.areEqual(
+      1,
+      [SELECT COUNT() FROM Order_Item__c WHERE Order__c = :paidOrder.Id],
+      'Đơn đã thanh toán không bị thêm món'
+    );
+    Assert.areEqual(
+      1,
+      [SELECT COUNT() FROM Order_Item__c WHERE Order__c = :newOrderId]
+    );
   }
 
   @IsTest
-  static void addNewItem_canceledOrder_throws() {
-    Order_Request__c order = createCurrentOrder('Canceled');
+  static void placeOrder_canceledOrder_createsNewOrder() {
+    Order_Request__c canceledOrder = createCurrentOrder('Canceled');
 
     Test.startTest();
-    String message = addNewItemError(
-      getTableId(),
-      new List<OrderService.OrderItemWrapper>{
-        buildItem(getMenuItemId('Tra Da'), 1, null)
-      }
-    );
+    OrderService.placeOrder(getTableId(), oneTraDa());
     Test.stopTest();
 
-    Assert.areEqual(OrderService.ERROR_ORDER_CLOSED, message);
-    assertOrderUnchanged(order.Id);
+    Assert.areEqual(2, [SELECT COUNT() FROM Order_Request__c]);
+    Assert.areNotEqual(canceledOrder.Id, getCurrentOrderId());
   }
 
   @IsTest
-  static void addNewItem_noCurrentOrder_throws() {
-    Test.startTest();
-    String message = addNewItemError(
-      getTableId(),
-      new List<OrderService.OrderItemWrapper>{
-        buildItem(getMenuItemId('Tra Da'), 1, null)
-      }
-    );
-    Test.stopTest();
-
-    Assert.areEqual(OrderService.ERROR_NO_CURRENT_ORDER, message);
-    assertNothingInserted();
-  }
-
-  @IsTest
-  static void addNewItem_unavailableItem_throws() {
-    Order_Request__c order = createCurrentOrder('Placed');
-
-    Test.startTest();
-    String message = addNewItemError(
-      getTableId(),
-      new List<OrderService.OrderItemWrapper>{
-        buildItem(getMenuItemId('Che Khuc'), 1, null)
-      }
-    );
-    Test.stopTest();
-
-    Assert.isNotNull(message, 'Phải báo lỗi khi món đã hết');
-    Assert.isTrue(message.contains('Che Khuc'), 'Lỗi phải nêu tên món');
-    assertOrderUnchanged(order.Id);
-  }
-
-  @IsTest
-  static void addNewItem_invalidInput_throws() {
-    Order_Request__c order = createCurrentOrder('Placed');
+  static void placeOrder_twiceBeforeEventProcessed_createsOneOrder() {
     Id tableId = getTableId();
-    Id phoId = getMenuItemId('Pho Bo');
 
+    // Khách gửi 2 lần liên tiếp, event lần 1 chưa kịp xử lý
     Test.startTest();
-    String missingTable = addNewItemError(
-      null,
-      new List<OrderService.OrderItemWrapper>{ buildItem(phoId, 1, null) }
-    );
-    String emptyItems = addNewItemError(tableId, null);
-    String badQuantity = addNewItemError(
+    OrderService.placeOrder(
       tableId,
-      new List<OrderService.OrderItemWrapper>{ buildItem(phoId, 0, null) }
+      new List<OrderService.OrderItemWrapper>{
+        buildItem(getMenuItemId('Pho Bo'), 1, null)
+      }
     );
+    OrderService.placeOrder(tableId, oneTraDa());
     Test.stopTest();
 
-    Assert.areEqual(OrderService.ERROR_MISSING_TABLE, missingTable);
-    Assert.areEqual(OrderService.ERROR_EMPTY_ORDER, emptyItems);
-    Assert.areEqual(OrderService.ERROR_INVALID_QUANTITY, badQuantity);
-    assertOrderUnchanged(order.Id);
+    Assert.areEqual(
+      1,
+      [SELECT COUNT() FROM Order_Request__c],
+      'Một bàn chỉ có 1 đơn đang mở'
+    );
+    Assert.areEqual(
+      2,
+      [SELECT COUNT() FROM Order_Item__c WHERE Order__c = :getCurrentOrderId()]
+    );
   }
 }
