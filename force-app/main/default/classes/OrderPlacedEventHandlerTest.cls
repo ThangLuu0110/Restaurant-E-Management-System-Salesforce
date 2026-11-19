@@ -390,4 +390,202 @@ private class OrderPlacedEventHandlerTest {
       'Log phải ghi lỗi tạo Order_Item__c'
     );
   }
+
+  // ---------- Gọi thêm món (Order_Id__c có giá trị) ----------
+
+  /** Tạo đơn có sẵn 1 món Pho Bo cho bàn. */
+  private static Order_Request__c createExistingOrder(
+    Id tableId,
+    String status
+  ) {
+    Order_Request__c order = new Order_Request__c(
+      Name = 'Existing Order',
+      Table__c = tableId,
+      Status__c = status
+    );
+    insert order;
+    insert new Order_Item__c(
+      Order__c = order.Id,
+      Menu_Item__c = getMenuItemId('Pho Bo'),
+      Quantity__c = 1
+    );
+    return order;
+  }
+
+  private static Order_Placed__e buildAddOnEvent(
+    Id tableId,
+    Id orderId,
+    List<Object> items
+  ) {
+    Order_Placed__e event = buildEvent(tableId, items);
+    event.Order_Id__c = orderId;
+    return event;
+  }
+
+  private static void assertExistingOrderUnchanged(Id orderId) {
+    Assert.areEqual(
+      1,
+      [SELECT COUNT() FROM Order_Request__c],
+      'Không được tạo hay xoá Order_Request__c'
+    );
+    Assert.areEqual(
+      1,
+      [SELECT COUNT() FROM Order_Item__c WHERE Order__c = :orderId],
+      'Đơn phải giữ nguyên món cũ, không có món mới'
+    );
+  }
+
+  @IsTest
+  static void addOnEvent_addsItemsToExistingOrder() {
+    Id tableId = getTableIds()[0];
+    Order_Request__c order = createExistingOrder(tableId, 'Placed');
+    Id traDaId = getMenuItemId('Tra Da');
+
+    deliver(
+      new List<Order_Placed__e>{
+        buildAddOnEvent(
+          tableId,
+          order.Id,
+          new List<Object>{ item(traDaId, 3, 'Ít đá') }
+        )
+      }
+    );
+
+    Assert.areEqual(
+      1,
+      [SELECT COUNT() FROM Order_Request__c],
+      'Gọi thêm không được tạo Order_Request__c mới'
+    );
+    Order_Item__c added = [
+      SELECT Order__c, Quantity__c, Special_Instructions__c, Status__c
+      FROM Order_Item__c
+      WHERE Menu_Item__c = :traDaId
+    ];
+    Assert.areEqual(order.Id, added.Order__c, 'Món phải thuộc đơn có sẵn');
+    Assert.areEqual(3, added.Quantity__c, 'Số lượng phải khớp');
+    Assert.areEqual('Ít đá', added.Special_Instructions__c);
+    Assert.areEqual('Pending', added.Status__c);
+    Assert.areEqual(
+      'Placed',
+      [SELECT Status__c FROM Order_Request__c WHERE Id = :order.Id].Status__c,
+      'Status của đơn không đổi khi gọi thêm'
+    );
+    Assert.areEqual(0, [SELECT COUNT() FROM Order_Error_Log__c]);
+  }
+
+  @IsTest
+  static void addOnEvent_closedOrder_logsAndAddsNothing() {
+    Id tableId = getTableIds()[0];
+    // Đơn đã được thanh toán sau khi khách gửi yêu cầu gọi thêm
+    Order_Request__c order = createExistingOrder(tableId, 'Paid');
+
+    deliver(
+      new List<Order_Placed__e>{
+        buildAddOnEvent(
+          tableId,
+          order.Id,
+          new List<Object>{ item(getMenuItemId('Tra Da'), 1, null) }
+        )
+      }
+    );
+
+    assertExistingOrderUnchanged(order.Id);
+    Assert.areEqual(
+      OrderPlacedEventHandler.ERROR_ORDER_CLOSED + 'Paid',
+      getSingleLog().Error_Message__c
+    );
+  }
+
+  @IsTest
+  static void addOnEvent_orderOfAnotherTable_logsAndAddsNothing() {
+    List<Id> tableIds = getTableIds();
+    Order_Request__c order = createExistingOrder(tableIds[0], 'Placed');
+
+    deliver(
+      new List<Order_Placed__e>{
+        buildAddOnEvent(
+          tableIds[1],
+          order.Id,
+          new List<Object>{ item(getMenuItemId('Tra Da'), 1, null) }
+        )
+      }
+    );
+
+    assertExistingOrderUnchanged(order.Id);
+    Assert.areEqual(
+      OrderPlacedEventHandler.ERROR_ORDER_NOT_FOUND,
+      getSingleLog().Error_Message__c
+    );
+  }
+
+  @IsTest
+  static void addOnEvent_itemInsertFails_keepsExistingOrderAndOldItems() {
+    Id tableId = getTableIds()[0];
+    Order_Request__c order = createExistingOrder(tableId, 'Preparing');
+
+    deliver(
+      new List<Order_Placed__e>{
+        buildAddOnEvent(
+          tableId,
+          order.Id,
+          new List<Object>{
+            item(getMenuItemId('Tra Da'), 1, null),
+            // Ghi chú dài hơn 255 ký tự -> insert lỗi STRING_TOO_LONG
+            item(getMenuItemId('Tra Da'), 1, 'x'.repeat(300))
+          }
+        )
+      }
+    );
+
+    // Món hợp lệ trong lần gọi thêm cũng bị huỷ, đơn và món cũ còn nguyên
+    assertExistingOrderUnchanged(order.Id);
+    Assert.isTrue(
+      getSingleLog()
+        .Error_Message__c.startsWith(
+          OrderPlacedEventHandler.ERROR_INSERT_ADDED_ITEM
+        ),
+      'Log phải ghi lỗi thêm món'
+    );
+  }
+
+  @IsTest
+  static void newAndAddOnEventsInSameBatch_areHandledSeparately() {
+    List<Id> tableIds = getTableIds();
+    Order_Request__c order = createExistingOrder(tableIds[0], 'Placed');
+    Id traDaId = getMenuItemId('Tra Da');
+
+    deliver(
+      new List<Order_Placed__e>{
+        buildAddOnEvent(
+          tableIds[0],
+          order.Id,
+          new List<Object>{ item(traDaId, 1, null) }
+        ),
+        buildEvent(tableIds[1], new List<Object>{ item(traDaId, 2, null) })
+      }
+    );
+
+    Assert.areEqual(
+      2,
+      [SELECT COUNT() FROM Order_Item__c WHERE Order__c = :order.Id],
+      'Đơn bàn 1 phải có thêm 1 món'
+    );
+    Order_Request__c newOrder = [
+      SELECT Id
+      FROM Order_Request__c
+      WHERE Table__c = :tableIds[1]
+    ];
+    Assert.areEqual(
+      1,
+      [SELECT COUNT() FROM Order_Item__c WHERE Order__c = :newOrder.Id],
+      'Đơn mới của bàn 2 có 1 món'
+    );
+    Assert.areEqual(
+      newOrder.Id,
+      [SELECT Current_Order__c FROM Table__c WHERE Id = :tableIds[1]]
+      .Current_Order__c,
+      'Bàn 2 phải trỏ tới đơn mới'
+    );
+    Assert.areEqual(0, [SELECT COUNT() FROM Order_Error_Log__c]);
+  }
 }
