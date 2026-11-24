@@ -406,6 +406,12 @@ private class OrderServiceTest {
       'Món gọi thêm phải gắn vào đơn đầu tiên'
     );
     Assert.areEqual(firstOrder.Id, getCurrentOrderId());
+    Assert.areEqual(
+      50000 + 5000,
+      [SELECT Subtotal__c FROM Order_Request__c WHERE Id = :firstOrder.Id]
+      .Subtotal__c,
+      'Subtotal__c phải gồm cả món gọi thêm'
+    );
   }
 
   @IsTest

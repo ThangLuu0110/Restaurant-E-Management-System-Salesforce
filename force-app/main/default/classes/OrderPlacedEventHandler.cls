@@ -3,7 +3,8 @@
  *
  * - Bàn chưa có đơn đang mở (Current_Order__c trống hoặc đơn đã Paid /
  *   Canceled): tạo Order_Request__c (Placed) mới và gắn vào
- *   Table__c.Current_Order__c.
+ *   Table__c.Current_Order__c. Đơn mới được giao cho waiter mặc định
+ *   (Custom Label LoveLyca_Default_Waiter_Id).
  * - Bàn đã có đơn đang mở: thêm Order_Item__c (Pending) vào đơn đó (gọi thêm
  *   món). Đơn đang Ready / Served được đưa về Placed để bếp biết có món mới.
  * - Nhiều event của cùng 1 bàn trong 1 batch dùng chung 1 đơn.
@@ -37,6 +38,15 @@ public without sharing class OrderPlacedEventHandler {
   private static final String ERROR_UPDATE_TABLE = 'Không cập nhật được Current_Order__c cho bàn: ';
   @TestVisible
   private static final String ERROR_REOPEN_ORDER = 'Không đưa được đơn về Placed sau khi gọi thêm: ';
+  @TestVisible
+  private static final String ERROR_WAITER_NOT_FOUND = 'Không tìm thấy waiter đang hoạt động theo Custom Label LoveLyca_Default_Waiter_Id, đơn được tạo với Waiter__c trống: ';
+
+  /**
+   * Id waiter mặc định, đọc từ Custom Label để đổi được theo từng org mà
+   * không sửa code. Test gán biến này để không phụ thuộc user có trên org.
+   */
+  @TestVisible
+  private static String defaultWaiterIdSetting = System.Label.LoveLyca_Default_Waiter_Id;
 
   /** Đơn ở trạng thái này coi như đã đóng, lần gọi tiếp theo tạo đơn mới. */
   @TestVisible
@@ -259,8 +269,19 @@ public without sharing class OrderPlacedEventHandler {
     if (creators.isEmpty()) {
       return errorByTable;
     }
+    // Chỉ gán waiter cho đơn mới; gọi thêm không ghi đè waiter đã có
+    Id waiterId = findDefaultWaiterId();
     List<Order_Request__c> orders = new List<Order_Request__c>();
     for (PendingOrder pending : creators) {
+      pending.order.Waiter__c = waiterId;
+      if (waiterId == null) {
+        logs.add(
+          buildLog(
+            pending.event,
+            ERROR_WAITER_NOT_FOUND + defaultWaiterIdSetting
+          )
+        );
+      }
       orders.add(pending.order);
     }
 
@@ -278,6 +299,29 @@ public without sharing class OrderPlacedEventHandler {
     }
     updateTableCurrentOrder(created, logs);
     return errorByTable;
+  }
+
+  /**
+   * Waiter mặc định nếu Id hợp lệ và user đang active, ngược lại null.
+   * Không ném lỗi: thiếu waiter không được làm hỏng đơn của khách.
+   */
+  private static Id findDefaultWaiterId() {
+    Id waiterId;
+    try {
+      waiterId = Id.valueOf(defaultWaiterIdSetting);
+    } catch (Exception e) {
+      return null;
+    }
+    if (waiterId.getSobjectType() != User.SObjectType) {
+      return null;
+    }
+    List<User> waiters = [
+      SELECT Id
+      FROM User
+      WHERE Id = :waiterId AND IsActive = TRUE
+      LIMIT 1
+    ];
+    return waiters.isEmpty() ? null : waiters[0].Id;
   }
 
   /** Gắn Order_Request__c vừa tạo vào Table__c.Current_Order__c tương ứng. */
