@@ -8,7 +8,8 @@ trigger OrderItemTrigger on Order_Item__c(
   before delete,
   after insert,
   after update,
-  after delete
+  after delete,
+  after undelete
 ) {
   if (Trigger.isBefore) {
     if (Trigger.isInsert)
@@ -25,5 +26,7 @@ trigger OrderItemTrigger on Order_Item__c(
       OrderItemTriggerHandler.afterUpdate(Trigger.new, Trigger.oldMap);
     if (Trigger.isDelete)
       OrderItemTriggerHandler.afterDelete(Trigger.old);
+    if (Trigger.isUndelete)
+      OrderItemTriggerHandler.afterUndelete(Trigger.new);
   }
 }

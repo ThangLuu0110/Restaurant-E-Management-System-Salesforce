@@ -607,4 +607,130 @@ private class OrderPlacedEventHandlerTest {
         )
     );
   }
+
+  // ---------- Waiter__c và Subtotal__c ----------
+
+  /**
+   * Gọi thẳng handler (không qua EventBus) để biến static
+   * defaultWaiterIdSetting chắc chắn có hiệu lực trong cùng transaction.
+   */
+  private static void handleDirectly(List<Order_Placed__e> events) {
+    Test.startTest();
+    OrderPlacedEventHandler.handle(events);
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void newOrder_assignsDefaultWaiter() {
+    OrderPlacedEventHandler.defaultWaiterIdSetting = UserInfo.getUserId();
+    Id tableId = getTableIds()[0];
+
+    handleDirectly(
+      new List<Order_Placed__e>{
+        buildEvent(
+          tableId,
+          new List<Object>{ item(getMenuItemId('Pho Bo'), 1, null) }
+        )
+      }
+    );
+
+    Assert.areEqual(
+      UserInfo.getUserId(),
+      [SELECT Waiter__c FROM Order_Request__c].Waiter__c,
+      'Đơn mới phải được giao cho waiter mặc định'
+    );
+    Assert.areEqual(0, [SELECT COUNT() FROM Order_Error_Log__c]);
+  }
+
+  @IsTest
+  static void addOn_doesNotOverwriteWaiter() {
+    OrderPlacedEventHandler.defaultWaiterIdSetting = UserInfo.getUserId();
+    Id tableId = getTableIds()[0];
+    // Đơn có sẵn chưa có waiter (vd. quản lý đã bỏ trống)
+    Order_Request__c order = createCurrentOrder(tableId, 'Placed');
+
+    handleDirectly(
+      new List<Order_Placed__e>{
+        buildEvent(
+          tableId,
+          new List<Object>{ item(getMenuItemId('Tra Da'), 1, null) }
+        )
+      }
+    );
+
+    Assert.isNull(
+      [SELECT Waiter__c FROM Order_Request__c WHERE Id = :order.Id].Waiter__c,
+      'Gọi thêm không được ghi đè Waiter__c'
+    );
+  }
+
+  @IsTest
+  static void invalidWaiterSetting_createsOrderWithoutWaiterAndLogs() {
+    OrderPlacedEventHandler.defaultWaiterIdSetting = 'not-an-id';
+
+    handleDirectly(
+      new List<Order_Placed__e>{
+        buildEvent(
+          getTableIds()[0],
+          new List<Object>{ item(getMenuItemId('Pho Bo'), 1, null) }
+        )
+      }
+    );
+
+    Order_Request__c order = [SELECT Waiter__c FROM Order_Request__c];
+    Assert.isNull(order.Waiter__c, 'Waiter không hợp lệ thì để trống');
+    Assert.areEqual(1, countItems(order.Id), 'Đơn vẫn phải được tạo');
+    Assert.isTrue(
+      getSingleLog()
+        .Error_Message__c.startsWith(
+          OrderPlacedEventHandler.ERROR_WAITER_NOT_FOUND
+        )
+    );
+  }
+
+  @IsTest
+  static void nonUserIdWaiterSetting_isRejected() {
+    // Id hợp lệ nhưng không phải User
+    OrderPlacedEventHandler.defaultWaiterIdSetting = getTableIds()[1];
+
+    handleDirectly(
+      new List<Order_Placed__e>{
+        buildEvent(
+          getTableIds()[0],
+          new List<Object>{ item(getMenuItemId('Pho Bo'), 1, null) }
+        )
+      }
+    );
+
+    Assert.isNull([SELECT Waiter__c FROM Order_Request__c].Waiter__c);
+    Assert.areEqual(1, [SELECT COUNT() FROM Order_Error_Log__c]);
+  }
+
+  @IsTest
+  static void orderAndAddOn_updateSubtotal() {
+    Id tableId = getTableIds()[0];
+    Id phoId = getMenuItemId('Pho Bo');
+    Id traDaId = getMenuItemId('Tra Da');
+
+    deliver(
+      new List<Order_Placed__e>{
+        buildEvent(tableId, new List<Object>{ item(phoId, 2, null) }),
+        buildEvent(tableId, new List<Object>{ item(traDaId, 3, null) }),
+        // Lần gửi lỗi: món hợp lệ của lần này cũng bị huỷ, không tính tiền
+        buildEvent(
+          tableId,
+          new List<Object>{
+            item(phoId, 1, null),
+            item(traDaId, 1, 'x'.repeat(300))
+          }
+        )
+      }
+    );
+
+    Assert.areEqual(
+      2 * 50000 + 3 * 5000,
+      [SELECT Subtotal__c FROM Order_Request__c].Subtotal__c,
+      'Subtotal__c chỉ gồm món của các lần gửi thành công'
+    );
+  }
 }

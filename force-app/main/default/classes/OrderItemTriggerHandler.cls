@@ -1,5 +1,7 @@
 /**
- * Handler cho OrderItemTrigger. Xử lý context before insert và before update.
+ * Handler cho OrderItemTrigger.
+ * - before insert / update: kiểm tra số lượng, trạng thái, tính Line_Subtotal__c.
+ * - after insert / update / delete / undelete: tính lại Subtotal__c của đơn.
  */
 public with sharing class OrderItemTriggerHandler {
   @TestVisible
@@ -43,21 +45,42 @@ public with sharing class OrderItemTriggerHandler {
     Map<Id, Order_Item__c> oldMap
   ) {
     handleStatusChange(newItems, oldMap);
+    recalculateChangedLines(newItems, oldMap);
   }
 
   public static void beforeDelete(List<Order_Item__c> newItems) {
   }
 
   public static void afterInsert(List<Order_Item__c> newItems) {
+    recalculateOrderSubtotal(collectOrderIds(newItems));
   }
 
   public static void afterUpdate(
     List<Order_Item__c> newItems,
     Map<Id, Order_Item__c> oldMap
   ) {
+    // Chỉ tính lại khi thay đổi ảnh hưởng tới tiền của đơn
+    Set<Id> orderIds = new Set<Id>();
+    for (Order_Item__c item : newItems) {
+      Order_Item__c oldItem = oldMap.get(item.Id);
+      if (
+        item.Status__c != oldItem.Status__c ||
+        item.Line_Subtotal__c != oldItem.Line_Subtotal__c ||
+        item.Order__c != oldItem.Order__c
+      ) {
+        orderIds.add(item.Order__c);
+        orderIds.add(oldItem.Order__c);
+      }
+    }
+    recalculateOrderSubtotal(orderIds);
   }
 
-  public static void afterDelete(List<Order_Item__c> newItems) {
+  public static void afterDelete(List<Order_Item__c> oldItems) {
+    recalculateOrderSubtotal(collectOrderIds(oldItems));
+  }
+
+  public static void afterUndelete(List<Order_Item__c> newItems) {
+    recalculateOrderSubtotal(collectOrderIds(newItems));
   }
 
   /**
@@ -154,6 +177,88 @@ public with sharing class OrderItemTriggerHandler {
         orderItem.Accept_Time__c = System.now();
       } else if (orderItem.Status__c == STATUS_READY) {
         orderItem.Ready_Time__c = System.now();
+      }
+    }
+  }
+
+  /**
+   * e. Đổi Quantity__c hoặc Menu_Item__c thì tính lại Line_Subtotal__c
+   *    (Quantity__c mới vẫn phải > 0). Giá lấy theo Price__c hiện tại.
+   */
+  private static void recalculateChangedLines(
+    List<Order_Item__c> newItems,
+    Map<Id, Order_Item__c> oldMap
+  ) {
+    List<Order_Item__c> changedItems = new List<Order_Item__c>();
+    for (Order_Item__c item : newItems) {
+      Order_Item__c oldItem = oldMap.get(item.Id);
+      if (
+        item.Quantity__c != oldItem.Quantity__c ||
+        item.Menu_Item__c != oldItem.Menu_Item__c
+      ) {
+        changedItems.add(item);
+      }
+    }
+    if (changedItems.isEmpty()) {
+      return;
+    }
+    calculateLineSubtotal(validateQuantity(changedItems));
+  }
+
+  private static Set<Id> collectOrderIds(List<Order_Item__c> items) {
+    Set<Id> orderIds = new Set<Id>();
+    for (Order_Item__c item : items) {
+      orderIds.add(item.Order__c);
+    }
+    return orderIds;
+  }
+
+  /**
+   * f. Order_Request__c.Subtotal__c = tổng Line_Subtotal__c của các món
+   *    không bị Canceled. Line_Subtotal__c trống tính là 0.
+   */
+  private static void recalculateOrderSubtotal(Set<Id> orderIds) {
+    orderIds.remove(null);
+    if (orderIds.isEmpty()) {
+      return;
+    }
+    new SubtotalWriter().recalculate(orderIds);
+  }
+
+  /**
+   * Chạy without sharing: tổng tiền phải luôn đúng, kể cả khi người sửa
+   * món (bếp, phục vụ) không có quyền sửa Order_Request__c qua sharing.
+   */
+  private without sharing class SubtotalWriter {
+    void recalculate(Set<Id> orderIds) {
+      // 1 SOQL; chỉ lấy đơn còn tồn tại (đơn bị xoá thì không cần cập nhật)
+      List<Order_Request__c> orders = new List<Order_Request__c>();
+      for (Order_Request__c order : [
+        SELECT
+          Id,
+          Subtotal__c,
+          (
+            SELECT Line_Subtotal__c
+            FROM Order_Item__r
+            WHERE Status__c != :STATUS_CANCELED
+          )
+        FROM Order_Request__c
+        WHERE Id IN :orderIds
+      ]) {
+        Decimal subtotal = 0;
+        for (Order_Item__c item : order.Order_Item__r) {
+          if (item.Line_Subtotal__c != null) {
+            subtotal += item.Line_Subtotal__c;
+          }
+        }
+        if (order.Subtotal__c != subtotal) {
+          orders.add(
+            new Order_Request__c(Id = order.Id, Subtotal__c = subtotal)
+          );
+        }
+      }
+      if (!orders.isEmpty()) {
+        update orders;
       }
     }
   }

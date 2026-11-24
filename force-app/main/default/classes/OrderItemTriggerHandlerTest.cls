@@ -197,7 +197,8 @@ private class OrderItemTriggerHandlerTest {
     Integer bulkQueries = Limits.getQueries() - queriesBefore;
     Test.stopTest();
 
-    Assert.areEqual(1, singleQueries, 'Trigger chỉ được dùng đúng 1 SOQL');
+    // 1 SOQL lấy giá (before insert) + 1 SOQL tính Subtotal__c (after insert)
+    Assert.areEqual(2, singleQueries, 'Trigger chỉ được dùng đúng 2 SOQL');
     Assert.areEqual(
       singleQueries,
       bulkQueries,
@@ -214,6 +215,11 @@ private class OrderItemTriggerHandlerTest {
         : 2 * PHO_PRICE;
       Assert.areEqual(expected, saved.Line_Subtotal__c);
     }
+    Assert.areEqual(
+      PHO_PRICE + 100 * 2 * PHO_PRICE + 100 * 2 * 30000,
+      getSubtotal(orderId),
+      'Subtotal__c phải bằng tổng mọi dòng trong đơn'
+    );
   }
 
   @IsTest
@@ -243,5 +249,148 @@ private class OrderItemTriggerHandlerTest {
       saved.Line_Subtotal__c,
       'Menu Item chưa có giá thì Line_Subtotal__c để trống'
     );
+    Assert.areEqual(
+      0,
+      getSubtotal(getOrder().Id),
+      'Dòng chưa có giá được tính là 0 trong Subtotal__c'
+    );
+  }
+
+  // ---------- Subtotal__c của Order_Request__c ----------
+
+  private static Decimal getSubtotal(Id orderId) {
+    return [SELECT Subtotal__c FROM Order_Request__c WHERE Id = :orderId]
+    .Subtotal__c;
+  }
+
+  private static Order_Item__c insertItem(Decimal quantity) {
+    Order_Item__c item = TestDataFactory.buildOrderItems(
+      getOrder().Id,
+      getMenuItem().Id,
+      quantity,
+      1
+    )[0];
+    insert item;
+    return item;
+  }
+
+  @IsTest
+  static void insert_setsOrderSubtotal() {
+    Test.startTest();
+    insertItem(2);
+    insertItem(1);
+    Test.stopTest();
+
+    Assert.areEqual(
+      3 * PHO_PRICE,
+      getSubtotal(getOrder().Id),
+      'Subtotal__c phải cộng dồn mọi lần thêm món'
+    );
+  }
+
+  @IsTest
+  static void cancelItem_isExcludedFromSubtotal() {
+    Order_Item__c kept = insertItem(2);
+    Order_Item__c canceled = insertItem(1);
+
+    Test.startTest();
+    update new Order_Item__c(
+      Id = canceled.Id,
+      Status__c = OrderItemTriggerHandler.STATUS_CANCELED
+    );
+    Test.stopTest();
+
+    Assert.areEqual(
+      2 * PHO_PRICE,
+      getSubtotal(getOrder().Id),
+      'Món Canceled không được tính vào Subtotal__c'
+    );
+  }
+
+  @IsTest
+  static void quantityChange_recalculatesLineAndSubtotal() {
+    Order_Item__c item = insertItem(1);
+
+    Test.startTest();
+    update new Order_Item__c(Id = item.Id, Quantity__c = 4);
+    Test.stopTest();
+
+    Assert.areEqual(
+      4 * PHO_PRICE,
+      [SELECT Line_Subtotal__c FROM Order_Item__c WHERE Id = :item.Id]
+      .Line_Subtotal__c,
+      'Đổi số lượng phải tính lại Line_Subtotal__c'
+    );
+    Assert.areEqual(4 * PHO_PRICE, getSubtotal(getOrder().Id));
+  }
+
+  @IsTest
+  static void updateQuantityToZero_isBlocked() {
+    Order_Item__c item = insertItem(1);
+
+    Test.startTest();
+    Database.SaveResult result = Database.update(
+      new Order_Item__c(Id = item.Id, Quantity__c = 0),
+      false
+    );
+    Test.stopTest();
+
+    Assert.isFalse(result.isSuccess(), 'Không được sửa số lượng về 0');
+    Assert.areEqual(
+      OrderItemTriggerHandler.ERROR_INVALID_QUANTITY,
+      result.getErrors()[0].getMessage()
+    );
+    Assert.areEqual(PHO_PRICE, getSubtotal(getOrder().Id));
+  }
+
+  @IsTest
+  static void deleteAndUndelete_recalculatesSubtotal() {
+    insertItem(2);
+    Order_Item__c removed = insertItem(1);
+
+    Test.startTest();
+    delete removed;
+    Decimal afterDelete = getSubtotal(getOrder().Id);
+    undelete removed;
+    Test.stopTest();
+
+    Assert.areEqual(
+      2 * PHO_PRICE,
+      afterDelete,
+      'Xoá món phải giảm Subtotal__c'
+    );
+    Assert.areEqual(
+      3 * PHO_PRICE,
+      getSubtotal(getOrder().Id),
+      'Khôi phục món phải cộng lại vào Subtotal__c'
+    );
+  }
+
+  @IsTest
+  static void bulkUpdate_recalculatesSubtotalOfEachOrder() {
+    Id firstOrderId = getOrder().Id;
+    Order_Request__c secondOrder = TestDataFactory.createOrderWithTable();
+    List<Order_Item__c> items = TestDataFactory.buildOrderItems(
+      firstOrderId,
+      getMenuItem().Id,
+      1,
+      100
+    );
+    items.addAll(
+      TestDataFactory.buildOrderItems(secondOrder.Id, getMenuItem().Id, 1, 100)
+    );
+    insert items;
+
+    Test.startTest();
+    // Chỉ gửi field cần đổi: Order__c (Master-Detail) không cho phép sửa
+    List<Order_Item__c> changes = new List<Order_Item__c>();
+    for (Order_Item__c item : items) {
+      changes.add(new Order_Item__c(Id = item.Id, Quantity__c = 2));
+    }
+    update changes;
+    Test.stopTest();
+
+    Assert.areEqual(200 * PHO_PRICE, getSubtotal(firstOrderId));
+    Assert.areEqual(200 * PHO_PRICE, getSubtotal(secondOrder.Id));
   }
 }
